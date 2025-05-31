@@ -31,7 +31,7 @@ def extract_embedded_ooxml_if_needed(file_path):
 def is_structurally_valid_ooxml(file_path):
     required_entries = {
         '.docx': ['[Content_Types].xml', '_rels/.rels', 'word/document.xml'],
-        '.xlsx': ['[Content_Types].xml', '_rels/.rels', 'xl/sharedStrings.xml'],
+        '.xlsx': ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml'],
         '.pptx': ['[Content_Types].xml', '_rels/.rels', 'ppt/slides/slide1.xml'],
     }
 
@@ -61,17 +61,12 @@ def get_file_hex(file_path):
     if not os.path.exists(file_path):
         return None, None
 
-    structurally_valid, ext = is_structurally_valid_ooxml(file_path)
-    if not structurally_valid:
-        print("[INFO] Not structurally valid. Proceeding with recovery.")
-    else:
-        print("[INFO] Partial OOXML structure detected. Attempting recovery regardless.")
-
     with open(file_path, 'rb') as f:
         data = f.read()
 
     pk_matches = list(re.finditer(rb'\x50\x4B\x03\x04', data))
     if not pk_matches:
+        print("[ERROR] No valid PK header found. Not an OOXML-based ZIP.")
         return None, None
 
     positions = [m.start() for m in pk_matches]
@@ -125,13 +120,29 @@ def get_file_hex(file_path):
     extract_img_file(local_file_in_hex, img_dir)
     extract_metadata(local_file_in_hex, output_directory)
 
-    print(f"Actual file extension: {ext[1:] if ext else 'unknown'}")
+    print(f"[INFO] Metadata saved to {output_directory}/metadata/metadata.txt")
 
-    if ext == '.docx':
+    file_ext = None
+    for entry in local_file_in_hex:
+        path = entry['local_file_name']
+        if path.startswith('word/'):
+            file_ext = '.docx'
+        elif path.startswith('xl/'):
+            file_ext = '.xlsx'
+        elif path.startswith('ppt/'):
+            file_ext = '.pptx'
+
+    print(f"Actual file extension: {file_ext[1:] if file_ext else 'unknown'}")
+
+    if file_ext == '.docx':
         docx.process_extracted_docx_data(local_file_in_hex, file_path)
-    elif ext == '.xlsx':
+    elif file_ext == '.xlsx':
         xlsx.process_extracted_xlsx_data(local_file_in_hex, file_path)
-    elif ext == '.pptx':
+    elif file_ext == '.pptx':
         pptx.process_extracted_pptx_data(local_file_in_hex, file_path)
 
-    return local_file_in_hex, ext
+    if file_ext:
+        print(f"[INFO] Completed processing for {file_ext[1:]} file.")
+    else:
+        print("[INFO] Processing completed.")
+    return local_file_in_hex, file_ext
