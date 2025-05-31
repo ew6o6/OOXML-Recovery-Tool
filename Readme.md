@@ -34,34 +34,26 @@ https://github.com/ew6o6/OOXML-Recovery-Tool
 ## Usage
 
 1. **As an installed script**
-   '''
-
+   ```bash
    # Recover a single file
-
    ort path/to/file.docx
-
    # Recover all OOXML files in a directory
-
    ort path/to/some_folder/
-
    # Recover a PowerPoint file
-
    ort ./slides/broken.pptx
-   '''
 
 2. **As a Python module**
-   '''
+   ```bash
    # From the project root (where setup.py lives):
    python -m ort path/to/file.xlsx
    python -m ort path/to/directory/
-   '''
+   
 
 ## Output Structure (Example)
 
-    '''
+    ```bash
     output_damaged/
     ├── img/
     ├── metadata.json
     ├── recovered.docx
     └── relationships.txt
-    '''
