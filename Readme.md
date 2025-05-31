@@ -47,7 +47,6 @@ https://github.com/ew6o6/OOXML-Recovery-Tool
    # From the project root (where setup.py lives):
    python -m ort path/to/file.xlsx
    python -m ort path/to/directory/
-   
 
 ## Output Structure (Example)
 
