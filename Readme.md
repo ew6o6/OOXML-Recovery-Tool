@@ -49,8 +49,6 @@ https://github.com/ew6o6/OOXML-Recovery-Tool
    python -m ort path/to/directory/
 
 ## Output Structure (Example)
-
-    ```bash
     output_damaged/
     ├── img/
     ├── metadata.json
