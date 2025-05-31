@@ -19,12 +19,12 @@ https://github.com/ew6o6/OOXML-Recovery-Tool
 ## Installation
 
 1. **Clone the repo**
-   '''bash
+   ```bash
    git clone https://github.com/ew6o6/OOXML-Recovery-Tool
    cd <REPO-DIR>
-   '''
+
 2. **(Optional) Create and activate a virtual environment**
-   '''bash
+   ```bash
    python3 -m venv .venv
    source .venv/bin/activate
    ''' 3.**Install in editable mode**
