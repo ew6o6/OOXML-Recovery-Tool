@@ -2,71 +2,144 @@ import os
 import re
 import json
 import binascii
-import zipfile
-import tempfile
+import struct
 from .decoder import decode_local_file_data, decode_utf8
 from .utils import extract_file_name, extract_img_file, extract_metadata
 from .handlers import docx, xlsx, pptx
-from bs4 import XMLParsedAsHTMLWarning
-import warnings
-import xml.etree.ElementTree as ET
 
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+# PK ZIP signatures
+LFH_SIG = b'\x50\x4B\x03\x04'  # Local file header
+CD_SIG = b'\x50\x4B\x01\x02'   # Central directory header
+EOCD_SIG = b'\x50\x4B\x05\x06' # End of central directory
 
-def extract_embedded_ooxml_if_needed(file_path):
-    if not zipfile.is_zipfile(file_path):
-        return file_path
-
-    with zipfile.ZipFile(file_path, 'r') as zip_ref:
-        embedded = [f for f in zip_ref.namelist() if f.endswith(('.pptx', '.docx', '.xlsx'))]
-        if not embedded:
-            return file_path
-        target = embedded[0]
-        temp_dir = tempfile.mkdtemp()
-        extracted_path = os.path.join(temp_dir, os.path.basename(target))
-        with open(extracted_path, 'wb') as out_f:
-            out_f.write(zip_ref.read(target))
-        return extracted_path
-
-def is_structurally_valid_ooxml(file_path):
-    required_entries = {
-        '.docx': ['[Content_Types].xml', '_rels/.rels', 'word/document.xml'],
-        '.xlsx': ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml'],
-        '.pptx': ['[Content_Types].xml', '_rels/.rels', 'ppt/slides/slide1.xml'],
-    }
-
+def is_structurally_valid_ooxml_raw(file_path):
+    """
+    CD-independent check for OOXML structure.
+    Parses local file headers directly without relying on Central Directory.
+    """
     try:
-        with zipfile.ZipFile(file_path, 'r') as z:
-            names = z.namelist()
-            for prefix, ext in [('word/', '.docx'), ('xl/', '.xlsx'), ('ppt/', '.pptx')]:
-                if any(name.startswith(prefix) for name in names):
-                    if all(req in names for req in required_entries[ext]):
-                        return True, ext
-                    else:
-                        return False, ext
-    except zipfile.BadZipFile:
+        with open(file_path, 'rb') as f:
+            data = f.read()
+
+        # Find all local file headers
+        local_file_names = extract_local_file_names_raw(data)
+
+        if not local_file_names:
+            return False, None
+
+        # Check for OOXML indicators
+        for prefix, ext in [('word/', '.docx'), ('xl/', '.xlsx'), ('ppt/', '.pptx')]:
+            if any(name.startswith(prefix) for name in local_file_names):
+                return True, ext
+
         return False, None
-    return False, None
+    except:
+        return False, None
 
-def has_meaningful_content(xml_content):
-    try:
-        root = ET.fromstring(xml_content)
-        return any("t" in elem.tag and elem.text and elem.text.strip() for elem in root.iter())
-    except ET.ParseError:
-        return False
+def extract_local_file_names_raw(data):
+    """
+    Extract local file names directly from binary data without using Central Directory.
+    Based on PK ZIP local file header structure.
+    """
+    names = []
+    pos = 0
+
+    while pos < len(data) - 30:
+        # Look for local file header signature
+        idx = data.find(LFH_SIG, pos)
+        if idx == -1:
+            break
+
+        # Parse local file header
+        try:
+            if idx + 30 > len(data):
+                break
+
+            # Get filename length and extra field length from header
+            fn_len = struct.unpack_from('<H', data, idx + 26)[0]
+            ex_len = struct.unpack_from('<H', data, idx + 28)[0]
+
+            # Sanity check on lengths
+            if fn_len == 0 or fn_len > 512 or ex_len > 65535:
+                pos = idx + 4
+                continue
+
+            # Extract filename
+            fn_start = idx + 30
+            fn_end = fn_start + fn_len
+
+            if fn_end > len(data):
+                break
+
+            filename = data[fn_start:fn_end].decode('utf-8', errors='ignore')
+            if filename and not filename.startswith('\x00'):
+                names.append(filename)
+
+            pos = fn_end + ex_len
+        except (struct.error, UnicodeDecodeError):
+            pos = idx + 4
+            continue
+
+    return names
 
 def get_file_hex(file_path):
-    file_path = extract_embedded_ooxml_if_needed(file_path)
-
+    """
+    Main extraction function implementing the paper's 3-stage process:
+    Stage 1 (Preprocessing): PK signature check, Deflate verification, OOXML type inference
+    Stage 2 (Damage Identification): Core Part presence check
+    Stage 3 (Selective Extraction): Deflate decompression, XML parsing, output generation
+    """
     if not os.path.exists(file_path):
         return None, None
 
     with open(file_path, 'rb') as f:
         data = f.read()
 
+    # === Stage 1: Preprocessing ===
+    # 1-1. PK signature check
+    if data[:4] != LFH_SIG:
+        print("[PREPROCESSING] No PK signature at file start. Not a ZIP-based file.")
+        return None, None
+
+    # 1-2. Compression method check (Deflate = 0x08)
+    if len(data) >= 10:
+        compression_method = struct.unpack_from('<H', data, 8)[0]
+        if compression_method not in (0, 8):  # 0=stored, 8=deflate
+            print(f"[PREPROCESSING] Unexpected compression method: {compression_method}. Not a valid OOXML file.")
+            return None, None
+
+    # 1-3. OOXML type inference via Core Part detection
+    is_valid, inferred_ext = is_structurally_valid_ooxml_raw(file_path)
+    if not is_valid:
+        print("[PREPROCESSING] No OOXML core parts found. Filtering as non-OOXML file (Type ③).")
+        return None, None
+
+    print(f"[PREPROCESSING] Valid OOXML structure detected. Inferred type: {inferred_ext}")
+
+    # === Stage 2: Damage Identification ===
+    local_file_names = extract_local_file_names_raw(data)
+    core_content_parts = {
+        '.docx': ['word/document.xml'],
+        '.xlsx': [r'xl/worksheets/sheet\d+\.xml'],
+        '.pptx': [r'ppt/slides/slide\d+\.xml'],
+    }
+
+    has_content_part = False
+    if inferred_ext in core_content_parts:
+        for pattern in core_content_parts[inferred_ext]:
+            if any(re.match(pattern, name) for name in local_file_names):
+                has_content_part = True
+                break
+
+    if not has_content_part:
+        print(f"[DAMAGE ID] No core content parts found for {inferred_ext}. File may be empty (Type ④) or unrecoverable.")
+        return None, None
+
+    print(f"[DAMAGE ID] Core content parts detected. Proceeding to extraction.")
+
+    # === Stage 3: Selective Extraction ===
     pk_matches = list(re.finditer(rb'\x50\x4B\x03\x04', data))
     if not pk_matches:
-        print("[ERROR] No valid PK header found. Not an OOXML-based ZIP.")
         return None, None
 
     positions = [m.start() for m in pk_matches]
@@ -79,6 +152,22 @@ def get_file_hex(file_path):
 
         file_name_len = int.from_bytes(part[26:28], 'little')
         extra_len = int.from_bytes(part[28:30], 'little')
+
+        # Validate filename length - typical OOXML paths are under 200 chars
+        # If corrupted (e.g. 0xFFFF), try to find the real filename
+        if file_name_len > 500 or file_name_len == 0:
+            # Try to extract filename by looking for null terminator or known patterns
+            raw_data = part[30:min(30+300, len(part))]
+            # Find first null byte or non-printable sequence
+            real_len = 0
+            for i, b in enumerate(raw_data):
+                if b == 0 or b > 127:
+                    real_len = i
+                    break
+            if real_len > 0:
+                file_name_len = real_len
+            else:
+                continue  # Skip this entry entirely
 
         file_name_start = 30
         file_name_end = file_name_start + file_name_len
