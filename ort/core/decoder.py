@@ -9,7 +9,6 @@ Two axes are kept separate (evaluation_definitions_v2):
 
 from __future__ import annotations
 
-import binascii
 import hashlib
 import re
 import xml.etree.ElementTree as ET
@@ -81,14 +80,6 @@ def _count_replacements(raw):
             count += 1
             position += max(exc.end, exc.start + 1)
     return "".join(pieces), count
-
-
-def decode_utf8(hex_str):
-    """Decode a hex string as UTF-8, ignoring invalid bytes."""
-    try:
-        return binascii.unhexlify(hex_str).decode("utf-8", "ignore")
-    except Exception:
-        return ""
 
 
 def is_xml_part(name):
@@ -277,28 +268,13 @@ def assess_content(name, raw, decode_status, crc_refs, size_refs):
     return "rejected", "no decoded bytes"
 
 
-def decompress_deflate_hex(hex_string):
-    """Decode a raw-DEFLATE hex string for compatibility with existing callers."""
-    raw, status, error, _, _ = decompress_with_status(bytes.fromhex(hex_string))
-    if status == "failed":
-        raise zlib.error(error or "DEFLATE decoding failed")
-    return raw.decode("utf-8", errors="replace")
-
-
-def decompress_deflate_bytes(hex_string):
-    """Decode a complete raw-DEFLATE stream and return binary bytes."""
-    raw, status, error, _, _ = decompress_with_status(bytes.fromhex(hex_string))
-    if status != "complete":
-        raise zlib.error(error or "incomplete DEFLATE stream")
-    return raw
-
-
 def decode_local_file_data(entries, max_output=MAX_DECODED_BYTES):
     """Decode entries and attach both status axes.
 
     Each entry may carry ``crc_refs`` / ``size_refs`` (trusted CRC-32 values and
     uncompressed sizes) gathered by the extractor. Rejected bytes are dropped and only
-    their size is kept (``rejected_bytes``).
+    their size is kept (``rejected_bytes``). Bytes of other content-yielding parts are kept
+    in ``_decoded_bytes`` (XML after prefix trimming) so that they can be written to disk.
     """
     for item in entries:
         name = item.get("local_file_name", "")
@@ -382,7 +358,10 @@ def decode_local_file_data(entries, max_output=MAX_DECODED_BYTES):
                     continue
             item["decoded_xml"] = decoded
             item["local_file_data"] = decoded
+            item["_decoded_bytes"] = raw
         elif is_media_part(name):
             item["decoded_media_hex"] = raw.hex()
+        else:
+            item["_decoded_bytes"] = raw
 
     return entries

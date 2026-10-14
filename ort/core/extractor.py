@@ -9,7 +9,8 @@ Pipeline (see evaluation_definitions_v2.md):
    excluding those inside CRC-verified payloads (e.g. embedded packages).
 3. Bound STORED payloads by CD -> LFH sizes -> data descriptor -> next header,
    preferring the first boundary whose CRC-32 verifies.
-4. Decode, validate content, extract text and media, and write manifest schema v2.
+4. Decode, validate content, write recovered parts, text, and media, and write the
+   recovery manifest (schema v3).
 """
 
 from __future__ import annotations
@@ -21,10 +22,13 @@ import re
 import struct
 import zipfile
 import zlib
+from collections import namedtuple
 from pathlib import Path
 
+from .. import __version__
 from .decoder import (
     CONTENT_YIELDING_VALIDATION,
+    MAX_DECODED_BYTES,
     OK_VALIDATION,
     decode_local_file_data,
     inflate_probe,
@@ -37,8 +41,10 @@ from .utils import (
     extract_img_file,
     extract_metadata,
     image_counts,
-    safe_output_stem,
+    new_output_directory,
     safe_print,
+    write_part,
+    write_relationships,
 )
 
 
@@ -439,7 +445,7 @@ def discover_entries(data, cd_records=None):
                 "local_file_name": header["name"],
                 "local_file_data": payload.hex(),
                 "compressed_data_hex": payload.hex(),
-                "img_ext": Path(header["name"]).suffix.lower() or None,
+                "extension": Path(header["name"]).suffix.lower() or None,
                 "compression_method": header["method"],
                 "general_purpose_flags": header["flags"],
                 "declared_compressed_size": header["csize"],
@@ -511,26 +517,6 @@ def _infer_extension(names):
     return None
 
 
-def extract_local_file_names_raw(data):
-    names = []
-    cd_records = parse_central_directory(data)
-    for offset in _plausible_lfh_offsets(data):
-        header = _parse_lfh(data, offset, cd_records)
-        if header:
-            names.append(header["name"])
-    return names
-
-
-def is_structurally_valid_ooxml_raw(file_path):
-    try:
-        data = Path(file_path).read_bytes()
-    except OSError:
-        return False, None
-    names = extract_local_file_names_raw(data)
-    extension = _infer_extension(names)
-    return bool(names and extension), extension
-
-
 def _core_status(entries, extension):
     core = [item for item in entries if _matches(item["local_file_name"], _CORE_PATTERNS.get(extension, ()))]
     if not core:
@@ -592,53 +578,70 @@ def tool_code_sha256():
 
 # --------------------------------------------------------------------------- main entry
 
+RecoveryResult = namedtuple("RecoveryResult", "entries extension output_directory overall_status")
+OUTPUT_LAYOUT = 2
 
-def get_file_hex(file_path, *, output_root=None, salvage_fragments=False):
-    """Extract surviving OOXML content and write a recovery manifest (schema v2)."""
+
+def _write_parts(entries, output_directory):
+    """Write every content-yielding non-media part to parts/<original path> (rejected bytes never)."""
+    used = set()
+    for item in entries:
+        raw = item.get("_decoded_bytes")
+        name = item["local_file_name"]
+        if not raw or is_media_part(name) or item.get("content_validation_status") not in CONTENT_YIELDING_VALIDATION:
+            continue
+        target = write_part(output_directory / "parts", name, raw, used)
+        item["output"] = target.relative_to(output_directory).as_posix()
+        item["output_sha256"] = hashlib.sha256(raw).hexdigest()
+
+
+def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_entries=False,
+                 max_part_size=MAX_DECODED_BYTES):
+    """Recover one file: write its output folder and recovery manifest (schema v3).
+
+    Returns RecoveryResult(entries, extension, output_directory, overall_status). When nothing
+    is written, overall_status is "missing_input" or "not_ooxml" and the other fields are None.
+    """
     input_path = Path(file_path)
-    if not input_path.exists():
-        return None, None
+    if not input_path.is_file():
+        return RecoveryResult(None, None, None, "missing_input")
     data = input_path.read_bytes()
     cd_records = parse_central_directory(data)
     entries, offsets = discover_entries(data, cd_records)
     if not entries:
         safe_print("[PREPROCESSING] No plausible local ZIP header found.")
-        return None, None
+        return RecoveryResult(None, None, None, "not_ooxml")
 
     names = [item["local_file_name"] for item in entries]
     inferred_ext = _infer_extension(names)
     if not inferred_ext:
         safe_print("[PREPROCESSING] No OOXML package prefix found.")
-        return None, None
+        return RecoveryResult(None, None, None, "not_ooxml")
     safe_print(f"[PREPROCESSING] OOXML parts found. Inferred type: {inferred_ext}")
 
     inventory_status, inventory_missing, inventory_extras = _central_directory_inventory(data, names)
-    decode_local_file_data(entries)
+    decode_local_file_data(entries, max_output=max_part_size)
     orphan_spans = _finalize_spans(entries)
     if offsets and offsets[0] > 0:
         orphan_spans.insert(0, {"kind": "unowned_prefix", "entry": None, "span": [0, offsets[0]], "bytes": offsets[0]})
+    for item in entries:
+        if item.get("content_validation_status") == "prefix_validated":
+            # The decoder can emit non-original output between the damage and the point where it fails.
+            item["tail_may_be_non_original"] = True
 
-    output_directory = (
-        Path(output_root) / f"output_{safe_output_stem(file_path)}"
-        if output_root
-        else input_path.parent / f"output_{safe_output_stem(file_path)}"
-    )
-    output_directory.mkdir(parents=True, exist_ok=True)
+    output_directory = new_output_directory(Path(output_root) if output_root else input_path.parent, input_path.name)
+    _write_parts(entries, output_directory)
 
     reported_missing_media = [name for name in inventory_missing if is_media_part(name)]
     image_records = extract_img_file(entries, output_directory / "img")
     image_status = aggregate_image_status(image_records, inventory_status, reported_missing_media)
-    extract_metadata(entries, output_directory)
+    metadata = extract_metadata(entries, output_directory)
+    write_relationships(entries, output_directory)
 
     content_patterns = _CONTENT_PATTERNS[inferred_ext]
-    text_stats = {}
-    if inferred_ext == ".docx":
-        docx_result = docx.process_extracted_docx_data(entries, str(input_path), output_directory)
-        text_stats = {part["name"]: part for part in docx_result["recovered_parts"]}
-    elif inferred_ext == ".xlsx":
-        xlsx.process_extracted_xlsx_data(entries, str(input_path), output_directory)
-    elif inferred_ext == ".pptx":
-        pptx.process_extracted_pptx_data(entries, str(input_path), output_directory)
+    handler = {".docx": docx.process_extracted_docx_data, ".xlsx": xlsx.process_extracted_xlsx_data,
+               ".pptx": pptx.process_extracted_pptx_data}[inferred_ext]
+    text_records = {record["name"]: record for record in handler(entries, output_directory)}
 
     content_parts = []
     for item in entries:
@@ -647,7 +650,7 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False):
             continue
         record = {"name": name, "decode_status": item.get("decode_status"),
                   "content_validation_status": item.get("content_validation_status")}
-        record.update({key: value for key, value in text_stats.get(name, {}).items() if key != "name"})
+        record.update({key: value for key, value in text_records.get(name, {}).items() if key != "name"})
         content_parts.append(record)
 
     core_status = _core_status(entries, inferred_ext)
@@ -676,13 +679,16 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False):
         fragment_records = salvage_sources(sources, extension=inferred_ext, output_directory=output_directory)
 
     manifest = {
-        "schema_version": 2,
-        "evaluation_definitions": "evaluation_definitions_v2",
+        "schema_version": 3,
+        "output_layout": OUTPUT_LAYOUT,
+        "tool_version": __version__,
+        "evaluation_definitions": "evaluation_definitions_v2_1",
         "tool_code_sha256": tool_code_sha256(),
         "input": str(input_path.resolve()),
         "input_sha256": hashlib.sha256(data).hexdigest(),
         "inferred_type": inferred_ext,
         "salvage_fragments": bool(salvage_fragments),
+        "max_part_size_bytes": max_part_size,
         "inventory_status": inventory_status,
         "inventory_missing_entries": inventory_missing,
         "inventory_extra_entries": inventory_extras,
@@ -695,6 +701,7 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False):
         "auxiliary_failed_entries": len(failed_entries) - len(content_failed) - len(media_failed),
         "content_failed_entries": len(content_failed),
         "media_failed_entries": len(media_failed),
+        "metadata": metadata,
         "entries": [_json_entry(item) for item in entries],
         "orphan_spans": orphan_spans,
         "content_parts": content_parts,
@@ -704,9 +711,10 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False):
     (output_directory / "recovery_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    local_files = [{key: value for key, value in item.items() if not key.startswith("_")} for item in entries]
-    (output_directory / f"{safe_output_stem(file_path)}_localFiles.json").write_text(
-        json.dumps(local_files, ensure_ascii=False, indent=2) + "\n", encoding="utf-8-sig"
-    )
+    if dump_entries:
+        dump = [{key: value for key, value in item.items() if not key.startswith("_")} for item in entries]
+        (output_directory / "entries.json").write_text(
+            json.dumps(dump, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
     safe_print(f"[INFO] Recovery status: {overall_status}; manifest: {output_directory / 'recovery_manifest.json'}")
-    return entries, inferred_ext
+    return RecoveryResult(entries, inferred_ext, output_directory, overall_status)

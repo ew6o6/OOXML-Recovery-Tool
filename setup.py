@@ -1,10 +1,14 @@
-from setuptools import setup, find_namespace_packages
+import re
+from pathlib import Path
+
+from setuptools import find_packages, setup
+
+VERSION = re.search(r'__version__ = "([^"]+)"', Path('ort/__init__.py').read_text(encoding='utf-8')).group(1)
 
 setup(
     name='ooxml-recovery-tool',
-    version='0.2.1',
-    # ort/core and ort/core/handlers have no __init__.py, so namespace discovery is required.
-    packages=find_namespace_packages(include=['ort', 'ort.*']),
+    version=VERSION,
+    packages=find_packages(include=['ort', 'ort.*']),
     install_requires=[
         'beautifulsoup4',
         'lxml',
@@ -13,12 +17,12 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'ort=ort.__main__:main'
+            'ort=ort.main:main'
         ]
     },
     author='Jiyun Kim',
     description='Extracts document content and images from damaged OOXML files (.docx, .xlsx, .pptx)',
-    long_description=open('README.md', encoding='utf-8').read(),
+    long_description=Path('README.md').read_text(encoding='utf-8'),
     long_description_content_type='text/markdown',
     url='https://github.com/ew6o6/OOXML-Recovery-Tool',
     license='MIT',

@@ -1,8 +1,7 @@
-"""Output, image-validation, filename, and metadata helpers."""
+"""Output, image-validation, filename, XML, and metadata helpers."""
 
 from __future__ import annotations
 
-import binascii
 import hashlib
 import io
 import os
@@ -12,6 +11,7 @@ import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 
+from lxml import etree
 from PIL import Image, ImageFile
 
 
@@ -22,29 +22,121 @@ def safe_print(message):
         print(str(message).encode("ascii", errors="replace").decode("ascii"))
 
 
-def safe_output_stem(file_path):
-    stem = os.path.splitext(os.path.basename(file_path))[0].rstrip(" .")
-    return stem or "recovered"
+# ------------------------------------------------------------------- output folders
+
+_WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 
 
-def _coerce_xml_text(value):
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="ignore")
-    if not isinstance(value, str):
-        return ""
-    if value.lstrip().startswith("<"):
-        return value
+def _safe_segment(segment):
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", segment).rstrip(" .") or "_"
+    if cleaned.split(".")[0].lower() in _WINDOWS_RESERVED:
+        cleaned = "_" + cleaned
+    return cleaned[:180]
+
+
+def new_output_directory(parent, file_path):
+    """Create output_<file name with extension>; never reuse an existing folder (adds _2, _3, ...)."""
+    parent = Path(parent)
+    base = "output_" + _safe_segment(os.path.basename(file_path) or "recovered")
+    counter = 1
+    while True:
+        candidate = parent / (base if counter == 1 else f"{base}_{counter}")
+        try:
+            candidate.mkdir(parents=True)
+            return candidate
+        except FileExistsError:
+            counter += 1
+
+
+def write_part(parts_root, name, data, used):
+    """Write a recovered part below parts_root under its original path; return the written path.
+
+    Segments are made safe for Windows. Names that collide case-insensitively get _2, _3, ...;
+    a path blocked by an existing file of the same name is written flat under _conflicts/."""
+    parts_root = Path(parts_root)
+    segments = [_safe_segment(segment) for segment in name.split("/") if segment]
+    target = parts_root.joinpath(*segments)
+    stem, suffix = target.stem, target.suffix
+    counter = 2
+    while target.as_posix().lower() in used or target.exists():
+        target = target.with_name(f"{stem}_{counter}{suffix}")
+        counter += 1
     try:
-        return binascii.unhexlify(value).decode("utf-8", errors="ignore")
-    except (binascii.Error, ValueError):
-        return value
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        target = parts_root / "_conflicts" / "_".join(segments)
+        while target.as_posix().lower() in used or target.exists():
+            target = target.with_name(f"{stem}_{counter}{suffix}")
+            counter += 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+    target.resolve().relative_to(parts_root.resolve())  # raises if the path left parts_root
+    target.write_bytes(data)
+    used.add(target.as_posix().lower())
+    return target
 
 
-def extract_file_name(decoded_name):
-    pattern = re.search(r"[\x00-\x1F\x7F]", decoded_name[::-1])
-    if pattern:
-        decoded_name = decoded_name[-pattern.end() + 1 :]
-    return decoded_name
+# ---------------------------------------------------------------------------- XML
+
+_XML_PARSER = etree.XMLParser(recover=True, resolve_entities=False, no_network=True, huge_tree=True)
+
+
+def parse_xml(text):
+    """Parse decoded XML leniently (validated prefixes are incomplete); None if nothing parses."""
+    if not text:
+        return None
+    data = text.encode("utf-8") if isinstance(text, str) else text
+    try:
+        return etree.fromstring(data, _XML_PARSER)
+    except (etree.XMLSyntaxError, ValueError):
+        return None
+
+
+def local_name(element):
+    """Element name without namespace or prefix ('' for comments and processing instructions).
+
+    In recovery mode an undeclared prefix stays in the tag ('p:sld'), so it is removed as well."""
+    if not isinstance(element.tag, str):
+        return ""
+    return element.tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+
+
+STATUS_NOTES = {
+    "crc_verified": "byte-identical to the original (CRC-32 verified)",
+    "structure_verified": "no CRC-32 reference; complete and well-formed",
+    "prefix_validated": "start of the part only; the end may contain non-original text",
+    "crc_mismatch": "CRC-32 differs from the original; content may be altered (invalid UTF-8 shown as U+FFFD)",
+    "unverified": "no CRC-32 reference and not well-formed; content may be altered",
+}
+
+
+def source_line(item, label="source"):
+    """One-line provenance header for text output: part name, validation status, and its meaning."""
+    status = item.get("content_validation_status")
+    return f"# {label}: {item.get('local_file_name')} | {status} | {STATUS_NOTES.get(status, '')}".rstrip(" |")
+
+
+def first_with_content(entries, name):
+    """First entry with decoded XML for a part name (duplicates can occur in damaged files)."""
+    return next((item for item in entries if item.get("local_file_name") == name and item.get("decoded_xml")), None)
+
+
+def write_relationships(entries, output_dir):
+    """Write every recovered .rels part, grouped by source part, to relationships.txt."""
+    blocks = []
+    for item in entries:
+        if not item.get("local_file_name", "").endswith(".rels") or not item.get("decoded_xml"):
+            continue
+        lines = [source_line(item)]
+        root = parse_xml(item["decoded_xml"])
+        for relationship in root.iter() if root is not None else ():
+            if local_name(relationship) != "Relationship":
+                continue
+            mode = relationship.get("TargetMode")
+            lines.append(f"{relationship.get('Id')}: {relationship.get('Target')} ({relationship.get('Type')})"
+                         + (f" [{mode}]" if mode else ""))
+        blocks.append("\n".join(lines))
+    if blocks:
+        (Path(output_dir) / "relationships.txt").write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
 
 
 def sanitize_part_basename(name):
@@ -313,31 +405,36 @@ def image_counts(records, reported_missing_media=()):
     }
 
 
+_METADATA_FIELDS = {
+    "docProps/core.xml": ("title", "subject", "creator", "keywords", "description", "lastModifiedBy", "revision",
+                          "created", "modified", "lastPrinted", "category", "contentStatus", "identifier",
+                          "language", "version"),
+    "docProps/app.xml": ("Application", "AppVersion", "Company", "Manager", "Template", "TotalTime", "Pages",
+                         "Words", "Characters", "Lines", "Paragraphs", "Slides", "Notes", "HiddenSlides"),
+}
+
+
 def extract_metadata(entries, output_dir):
-    tags = {
-        "dc:creator": "creator",
-        "cp:lastModifiedBy": "lastModifiedBy",
-        "cp:revision": "revision",
-        "dcterms:created": "created",
-        "dcterms:modified": "modified",
-    }
-    results = ["[Document Metadata]"]
-    for item in entries:
-        if item.get("local_file_name") != "docProps/core.xml":
+    """Write metadata.txt from docProps/core.xml and docProps/app.xml; return the values per part.
+
+    Only decoded XML that passed content validation is read; each block names its source status."""
+    lines = []
+    result = {}
+    for part, fields in _METADATA_FIELDS.items():
+        item = first_with_content(entries, part)
+        if item is None:
+            lines += [f"# {part}: not recovered", ""]
             continue
-        # Only validated decoded XML is used; compressed bytes are never parsed as metadata.
-        xml_raw = item.get("decoded_xml") or ""
-        found = False
-        for tag, label in tags.items():
-            match = re.search(f"<{tag}.*?>(.*?)</{tag}>", xml_raw)
-            if match and match.group(1):
-                found = True
-                value = match.group(1)
-                results.append(f"{label} : {value} (<{tag}>{value}</{tag}>)")
-        if not found:
-            results = ["Metadata is severely damaged or missing."]
-    metadata_path = Path(output_dir) / "metadata" / "metadata.txt"
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path.write_text("\n".join(results), encoding="utf-8")
-    safe_print(f"[INFO] Metadata saved to {metadata_path}")
-    return str(metadata_path)
+        values = {}
+        root = parse_xml(item["decoded_xml"])
+        for element in root if root is not None else ():
+            name = local_name(element)
+            if name in fields and (element.text or "").strip() and name not in values:
+                values[name] = element.text
+        lines.append(source_line(item))
+        lines += [f"{name}: {value}" for name, value in values.items()]
+        lines.append("")
+        result[part] = {"content_validation_status": item.get("content_validation_status"), "values": values}
+    metadata_path = Path(output_dir) / "metadata.txt"
+    metadata_path.write_text("\n".join(lines), encoding="utf-8")
+    return result
