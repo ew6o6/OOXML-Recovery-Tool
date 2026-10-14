@@ -1,24 +1,26 @@
-from setuptools import setup, find_packages
-'''
-pip 설치 및 ooxml-parse 명령어 제공
-ooxml_parser.main:main 함수 진입점 지정
-'''
+from setuptools import setup, find_namespace_packages
+
 setup(
-    name='ooxml_parser',
-    version='0.1.0',
-    packages=find_packages(),
+    name='ooxml-recovery-tool',
+    version='0.2.1',
+    # ort/core and ort/core/handlers have no __init__.py, so namespace discovery is required.
+    packages=find_namespace_packages(include=['ort', 'ort.*']),
     install_requires=[
         'beautifulsoup4',
         'lxml',
-        'tabulate',
-        'python-docx'
+        'python-docx',
+        'pillow',
     ],
     entry_points={
         'console_scripts': [
-            'ooxml-parse=ooxml_parser.__main__:main'
+            'ort=ort.__main__:main'
         ]
     },
-    author='Your Name',
-    description='A recovery and extraction tool for damaged OOXML documents (.docx, .xlsx, .pptx)',
-    python_requires='>=3.8'
+    author='Jiyun Kim',
+    description='Extracts document content and images from damaged OOXML files (.docx, .xlsx, .pptx)',
+    long_description=open('README.md', encoding='utf-8').read(),
+    long_description_content_type='text/markdown',
+    url='https://github.com/ew6o6/OOXML-Recovery-Tool',
+    license='MIT',
+    python_requires='>=3.8',
 )

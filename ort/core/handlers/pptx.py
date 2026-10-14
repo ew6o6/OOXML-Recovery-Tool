@@ -1,19 +1,39 @@
 import os
+import re
 import binascii
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 from .common import parse_rels_file
-from ..utils import extract_file_name
+from ..utils import extract_file_name, safe_output_stem, safe_print
 
-def process_extracted_pptx_data(local_file_xml, file_path):
-    out_dir = os.path.join(os.path.dirname(file_path), f"output_{os.path.splitext(os.path.basename(file_path))[0]}")
+def sanitize_filename(name):
+    """Remove or replace invalid characters from filename."""
+    if not name:
+        return "unknown"
+    # Keep only ASCII printable characters (32-126), replace others
+    result = []
+    for c in name:
+        if 32 <= ord(c) <= 126:
+            result.append(c)
+    name = ''.join(result)
+    # Remove invalid Windows filename characters
+    name = re.sub(r'[<>:"/\\|?*]', '_', name)
+    # Limit length
+    if len(name) > 100:
+        name = name[:100]
+    return name.strip() if name.strip() else "unknown"
+
+def process_extracted_pptx_data(local_file_xml, file_path, output_directory=None):
+    out_dir = output_directory or os.path.join(os.path.dirname(file_path), f"output_{safe_output_stem(file_path)}")
     os.makedirs(out_dir, exist_ok=True)
 
     # 슬라이드 텍스트 추출
-    slides = [(i['local_file_name'], i['local_file_data']) for i in local_file_xml if i['local_file_name'].startswith('ppt/slides/slide')]
+    # Only validated decoded XML is parsed; compressed payload hex is never treated as XML.
+    slides = [(i['local_file_name'], i['decoded_xml']) for i in local_file_xml
+              if re.match(r'ppt/slides/slide\d+\.xml$', i['local_file_name']) and i.get('decoded_xml')]
     for name, xml in slides:
         soup = BeautifulSoup(xml, "xml")
-        slide_num = name.split("/")[-1].replace(".xml", "")
+        slide_num = sanitize_filename(name.split("/")[-1].replace(".xml", ""))
         texts = []
 
         for sp in soup.find_all("p:sp"):
@@ -32,30 +52,31 @@ def process_extracted_pptx_data(local_file_xml, file_path):
         with open(out_path, "w", encoding="utf-8") as f:
             f.write("\n".join(texts))
             
+    # 노트 슬라이드 텍스트 추출 (document_content_status 범위, Q7)
+    notes = [(i['local_file_name'], i['decoded_xml']) for i in local_file_xml
+             if re.match(r'ppt/notesSlides/notesSlide\d+\.xml$', i['local_file_name']) and i.get('decoded_xml')]
+    for name, xml in notes:
+        soup = BeautifulSoup(xml, "xml")
+        paragraphs = []
+        for paragraph in soup.find_all("a:p"):
+            text = "".join(t.get_text() for t in paragraph.find_all("a:t"))
+            if text.strip():
+                paragraphs.append(text)
+        note_name = sanitize_filename(name.split("/")[-1].replace(".xml", ""))
+        with open(os.path.join(out_dir, f"{note_name}.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(paragraphs))
+
     # 관계 파일 추출
-    rels_xml = next((i['local_file_data'] for i in local_file_xml if i['local_file_name'] == 'ppt/_rels/presentation.xml.rels'), "")
+    rels_xml = next((i.get('decoded_xml', '') for i in local_file_xml if i['local_file_name'] == 'ppt/_rels/presentation.xml.rels'), "")
     if rels_xml:
         rels = parse_rels_file(rels_xml)
         with open(os.path.join(out_dir, "relationships_pptx.txt"), 'w', encoding='utf-8') as f:
             f.write("[Relationships]\n" + "\n".join(rels))
 
-    # 이미지 추출
-    img_dir = os.path.join(out_dir, 'img')
-    os.makedirs(img_dir, exist_ok=True)
-    for item in local_file_xml:
-        if item['local_file_name'].startswith('ppt/media/'):
-            img_ext = os.path.splitext(item['local_file_name'])[1]
-            img_path = os.path.join(img_dir, os.path.basename(item['local_file_name']))
-            try:
-                with open(img_path, 'wb') as f:
-                    f.write(binascii.unhexlify(item['local_file_data']))
-            except Exception as e:
-                print(f"[ERROR] Failed to save image {img_path}: {e}")
-
     # 메타데이터 추출
     metadata_path = os.path.join(out_dir, 'metadata', 'metadata.txt')
     os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
-    core_xml = next((i['local_file_data'] for i in local_file_xml if i['local_file_name'] == 'docProps/core.xml'), None)
+    core_xml = next((i.get('decoded_xml') for i in local_file_xml if i['local_file_name'] == 'docProps/core.xml'), None)
     if core_xml:
         tags = {
             'dc:creator': 'creator',
@@ -72,4 +93,4 @@ def process_extracted_pptx_data(local_file_xml, file_path):
         with open(metadata_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(results))
 
-    print(f"\n[PPTX output path] {out_dir}")
+    safe_print(f"\n[PPTX output path] {out_dir}")
