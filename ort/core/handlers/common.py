@@ -9,7 +9,7 @@ def parse_styles_xml(styles_xml):
     Parses the style definitions in a DOCX styles.xml file.
     Example return: {"Heading1": {"name": "heading 1", "based_on": "Normal"}}
     """
-    soup = BeautifulSoup(styles_xml, "lxml")
+    soup = BeautifulSoup(styles_xml, "xml")
     styles = {}
 
     for style in soup.find_all("w:style"):
@@ -26,8 +26,8 @@ def parse_styles_xml(styles_xml):
     return styles
 
 def extract_xml_text_for_docx(xml_data: str, styles: dict) -> str:
-    """Extracts paragraphs from DOCX document XML and annotates them with style names."""
-    soup = BeautifulSoup(xml_data, "lxml")
+    """Extract DOCX text without inventing spaces at Word run boundaries."""
+    soup = BeautifulSoup(xml_data, "xml")
     lines = []
 
     for p in soup.find_all('w:p'):
@@ -36,11 +36,13 @@ def extract_xml_text_for_docx(xml_data: str, styles: dict) -> str:
         style_info = styles.get(style_id, {})
         style_name = style_info.get('name', '')
 
-        paragraph_text = ' '.join(p.stripped_strings)
-        if style_name:
-            lines.append(f"[{style_name}] {paragraph_text}")
-        else:
-            lines.append(paragraph_text)
+        chunks = []
+        for node in p.descendants:
+            if getattr(node, 'name', None) == 't':
+                chunks.append(node.get_text())
+            elif getattr(node, 'name', None) in ('tab', 'br', 'cr'):
+                chunks.append('\t' if node.name == 'tab' else '\n')
+        lines.append(''.join(chunks))
 
     return '\n'.join(lines)
 

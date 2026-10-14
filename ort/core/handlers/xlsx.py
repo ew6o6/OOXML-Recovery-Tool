@@ -1,5 +1,6 @@
 import os
 import re
+from ..utils import safe_output_stem, safe_print
 from .common import (
     extract_data_from_shared_strings,
     extract_data_from_sheet,
@@ -9,14 +10,16 @@ from .common import (
     display_and_save_table_to_csv
 )
 
-def process_extracted_xlsx_data(local_file_xml, file_path):
-    out_dir = os.path.join(os.path.dirname(file_path), f"output_{os.path.basename(file_path).rsplit('.', 1)[0]}")
+def process_extracted_xlsx_data(local_file_xml, file_path, output_directory=None):
+    out_dir = output_directory or os.path.join(os.path.dirname(file_path), f"output_{safe_output_stem(file_path)}")
     os.makedirs(out_dir, exist_ok=True)
 
-    shared_xml = next((i['local_file_data'] for i in local_file_xml if i['local_file_name'] == 'xl/sharedStrings.xml'), "")
-    styles_xml = next((i['local_file_data'] for i in local_file_xml if i['local_file_name'] == 'xl/styles.xml'), "")
-    rels_xml = next((i['local_file_data'] for i in local_file_xml if i['local_file_name'] == 'xl/_rels/workbook.xml.rels'), "")
-    sheets = [i['local_file_data'] for i in local_file_xml if re.match(r'xl/worksheets/sheet\d+.xml', i['local_file_name'])]
+    # Only validated decoded XML is parsed; compressed payload hex is never treated as XML.
+    shared_xml = next((i.get('decoded_xml', '') for i in local_file_xml if i['local_file_name'] == 'xl/sharedStrings.xml'), "")
+    styles_xml = next((i.get('decoded_xml', '') for i in local_file_xml if i['local_file_name'] == 'xl/styles.xml'), "")
+    rels_xml = next((i.get('decoded_xml', '') for i in local_file_xml if i['local_file_name'] == 'xl/_rels/workbook.xml.rels'), "")
+    sheets = [i['decoded_xml'] for i in local_file_xml
+              if re.match(r'xl/worksheets/sheet\d+\.xml$', i['local_file_name']) and i.get('decoded_xml')]
 
     shared_strings = extract_data_from_shared_strings(shared_xml)
     style_map = parse_xlsx_styles(styles_xml) if styles_xml else {}
@@ -36,4 +39,4 @@ def process_extracted_xlsx_data(local_file_xml, file_path):
         with open(os.path.join(out_dir, "relationships_xlsx.txt"), 'w', encoding='utf-8') as f:
             f.write("[Relationships]\n" + "\n".join(rels_info))
 
-    print(f"\n[XLSX output path] {out_dir}")
+    safe_print(f"\n[XLSX output path] {out_dir}")
