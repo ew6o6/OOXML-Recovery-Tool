@@ -645,5 +645,108 @@ class Release030Tests(unittest.TestCase):
         self.assertEqual(entry["decode_error"], "decoded output limit exceeded")
         self.assertEqual(manifest["max_part_size_bytes"], 64)
 
+# ----------------------------------------------------------------------------- recovered_document.md
+
+RNS = b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+
+
+def rels(*items):
+    body = "".join(f'<Relationship Id="{rid}" Target="{target}" Type="{REL}{kind}"/>' for rid, target, kind in items)
+    return f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{body}</Relationships>'.encode()
+
+
+class RecoveredDocumentTests(unittest.TestCase):
+    def test_docx_image_position_and_label_index(self):
+        document = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' + DML
+                    + b' ' + RNS + b'><w:body><w:p><w:r><w:t>Before</w:t></w:r><w:r><w:drawing><a:graphic>'
+                    b'<a:graphicData><a:blip r:embed="rId5"/></a:graphicData></a:graphic></w:drawing></w:r>'
+                    b'<w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>')
+        manifest, out = run_named({"word/document.xml": document, "word/media/image1.png": png_bytes(),
+                                   "word/_rels/document.xml.rels": rels(("rId5", "media/image1.png", "image"))},
+                                  "doc.docx")
+        self.assertEqual(manifest["recovered_document"], "recovered_document.md")
+        self.assertIsNone(manifest["recovered_document_error"])
+        text = (out / "recovered_document.md").read_text(encoding="utf-8")
+        self.assertIn("### Body (`word/document.xml`) — crc_verified", text)
+        self.assertIn("Before[Image 1]After", text)
+        self.assertIn("![Image 1](<img/verified/image1.png>)", text)
+        labels = text.split("## Labels", 1)[1]
+        self.assertIn('`word/document.xml`: "Body"', labels)
+        self.assertIn("Image 1: `word/media/image1.png`", labels)
+
+    def test_prefix_is_marked_at_the_damage_point(self):
+        _, out = run_tool(truncated_body_entry(), "prefixdoc")
+        text = (out / "recovered_document.md").read_text(encoding="utf-8")
+        body = text.split("## Labels", 1)[0]
+        self.assertIn("— prefix_validated", body)
+        self.assertTrue(body.rstrip().endswith("the text just above may be non-original."))
+        self.assertIn("### prefix_validated", text.split("## Labels", 1)[1])
+
+    def test_xlsx_sheet_order_cells_and_anchored_image(self):
+        sheet = (b'<worksheet ' + SSML + b' ' + RNS + b'><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row>'
+                 b'</sheetData><drawing r:id="rId1"/></worksheet>')
+        drawing = (b'<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+                   + DML + b' ' + RNS + b'><xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff>'
+                   b'<xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:pic><xdr:blipFill>'
+                   b'<a:blip r:embed="rId1"/></xdr:blipFill></xdr:pic></xdr:twoCellAnchor></xdr:wsDr>')
+        workbook = (b'<workbook ' + SSML + b' ' + RNS + b'><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/>'
+                    b'</sheets></workbook>')
+        shared = b'<sst ' + SSML + b'><si><t>Cell</t></si></sst>'
+        parts = {"xl/workbook.xml": workbook, "xl/_rels/workbook.xml.rels": rels(("rId1", "worksheets/sheet1.xml", "worksheet")),
+                 "xl/worksheets/sheet1.xml": sheet, "xl/sharedStrings.xml": shared,
+                 "xl/worksheets/_rels/sheet1.xml.rels": rels(("rId1", "../drawings/drawing1.xml", "drawing")),
+                 "xl/drawings/drawing1.xml": drawing,
+                 "xl/drawings/_rels/drawing1.xml.rels": rels(("rId1", "../media/image1.png", "image")),
+                 "xl/media/image1.png": png_bytes()}
+        _, out = run_named(parts, "book.xlsx")
+        text = (out / "recovered_document.md").read_text(encoding="utf-8")
+        self.assertIn("### Sheet 1 'Sales' (`xl/worksheets/sheet1.xml`) — crc_verified", text)
+        self.assertIn("- Row 1: A1=Cell", text)
+        self.assertIn("- At C5: [Image 1]", text)
+
+    def test_pptx_presentation_order_picture_and_notes(self):
+        presentation = (b'<p:presentation ' + PML + b' ' + RNS + b'><p:sldIdLst><p:sldId id="256" r:id="rId2"/>'
+                        b'</p:sldIdLst></p:presentation>')
+        slide = (b'<p:sld ' + PML + b' ' + DML + b' ' + RNS + b'><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r>'
+                 b'<a:t>Title text</a:t></a:r></a:p></p:txBody></p:sp><p:pic><p:blipFill><a:blip r:embed="rId3"/>'
+                 b'</p:blipFill></p:pic></p:spTree></p:cSld></p:sld>')
+        notes = (b'<p:notes ' + PML + b' ' + DML + b'><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/>'
+                 b'</p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Speaker note</a:t></a:r></a:p></p:txBody></p:sp>'
+                 b'</p:spTree></p:cSld></p:notes>')
+        parts = {"ppt/presentation.xml": presentation,
+                 "ppt/_rels/presentation.xml.rels": rels(("rId2", "slides/slide2.xml", "slide")),
+                 "ppt/slides/slide2.xml": slide, "ppt/notesSlides/notesSlide1.xml": notes,
+                 "ppt/slides/_rels/slide2.xml.rels": rels(("rId3", "../media/image1.png", "image"),
+                                                          ("rId4", "../notesSlides/notesSlide1.xml", "notesSlide")),
+                 "ppt/media/image1.png": png_bytes()}
+        _, out = run_named(parts, "deck.pptx")
+        text = (out / "recovered_document.md").read_text(encoding="utf-8")
+        self.assertIn("### Slide 1 (`ppt/slides/slide2.xml`) — crc_verified", text)
+        self.assertLess(text.index("Title text"), text.index("[Image 1]"))
+        self.assertIn("### Slide 1 notes (`ppt/notesSlides/notesSlide1.xml`)", text)
+        self.assertIn("Speaker note", text)
+
+    def test_uniformly_filled_image_is_described_without_a_file(self):
+        original = package({"word/document.xml": BODY, "word/media/image1.png": png_bytes() * 20},
+                           compression=zipfile.ZIP_STORED)
+        _, start, size = entry_layout(original, "word/media/image1.png")
+        damaged = original[:start] + b"\x00" * size + original[start + size:]
+        _, out = run_tool(damaged, "zerodoc")
+        text = (out / "recovered_document.md").read_text(encoding="utf-8")
+        self.assertIn("its data area is filled with 0x00", text)
+        self.assertIn("### rejected", text)
+
+    def test_document_failure_does_not_affect_recovery(self):
+        from unittest import mock
+        with mock.patch("ort.core.extractor.write_recovered_document", side_effect=RuntimeError("boom")):
+            manifest, out = run_tool(package({"word/document.xml": BODY}), "isolated")
+        self.assertEqual(manifest["overall_status"], "complete")
+        self.assertIsNone(manifest["recovered_document"])
+        self.assertEqual(manifest["recovered_document_error"], "RuntimeError: boom")
+        self.assertFalse((out / "recovered_document.md").exists())
+        self.assertTrue((out / "text" / "word_document.xml.txt").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
