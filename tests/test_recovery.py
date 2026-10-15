@@ -737,6 +737,16 @@ class RecoveredDocumentTests(unittest.TestCase):
         self.assertIn("its data area is filled with 0x00", text)
         self.assertIn("### rejected", text)
 
+    def test_deeply_nested_xml_does_not_exceed_the_recursion_limit(self):
+        depth = 3000  # deeper than Python's default recursion limit (1000)
+        nested = b"<w:r>" * depth + b"<w:t>deep text</w:t>" + b"</w:r>" * depth
+        document = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                    b'<w:sdt><w:sdtContent>' * 1 + b'<w:p>' + nested + b'</w:p>' + b'</w:sdtContent></w:sdt>'
+                    b'</w:body></w:document>')
+        manifest, out = run_named({"word/document.xml": document}, "deep.docx")
+        self.assertIsNone(manifest["recovered_document_error"])
+        self.assertIn("deep text", (out / "recovered_document.md").read_text(encoding="utf-8"))
+
     def test_document_failure_does_not_affect_recovery(self):
         from unittest import mock
         with mock.patch("ort.core.extractor.write_recovered_document", side_effect=RuntimeError("boom")):

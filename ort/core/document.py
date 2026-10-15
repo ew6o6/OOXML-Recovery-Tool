@@ -122,9 +122,14 @@ class _Builder:
 
     # ------------------------------------------------------------------ text
     def runs(self, node, rels, pending):
-        """Text of a node in document order with image markers; mc:Fallback copies are skipped."""
+        """Text of a node in document order with image markers; mc:Fallback copies are skipped.
+
+        The walk uses an explicit stack: damaged XML recovered by the lenient parser can nest deeper
+        than Python's recursion limit."""
         pieces = []
-        for child in node:
+        stack = list(reversed(list(node)))
+        while stack:
+            child = stack.pop()
             name = local_name(child)
             if name == "Fallback":
                 continue
@@ -140,7 +145,7 @@ class _Builder:
                     media = rels[relationship][0]
                     pieces.append(self.marker(media))
                     pending.append(media)
-            pieces.append(self.runs(child, rels, pending))
+            stack.extend(reversed(list(child)))
         return "".join(pieces)
 
     def with_images(self, text, pending):
@@ -173,7 +178,12 @@ class _Builder:
     def docx(self):
         def blocks(container, rels):
             lines = []
-            for child in container:
+            stack = [iter(container)]  # containers are entered in place, without recursion
+            while stack:
+                child = next(stack[-1], None)
+                if child is None:
+                    stack.pop()
+                    continue
                 name = local_name(child)
                 pending = []
                 if name == "p":
@@ -184,7 +194,7 @@ class _Builder:
                                  for cell in row if local_name(cell) == "tc"]
                         lines += self.with_images("| " + " | ".join(cells) + " |", pending)
                 elif name in DOCX_CONTAINERS:
-                    lines += blocks(child, rels)
+                    stack.append(iter(child))
             return lines
 
         root = self.xml("word/document.xml")
@@ -256,7 +266,12 @@ class _Builder:
                    if re.match(r"^ppt/slides/slide\d+\.xml$", part) and part not in slides]
 
         def shapes(container, rels, lines):
-            for child in container:
+            stack = [iter(container)]  # groups are entered in place, without recursion
+            while stack:
+                child = next(stack[-1], None)
+                if child is None:
+                    stack.pop()
+                    continue
                 name = local_name(child)
                 pending = []
                 if name == "sp":
@@ -273,11 +288,11 @@ class _Builder:
                                  for cell in row if local_name(cell) == "tc"]
                         lines += self.with_images("| " + " | ".join(cells) + " |", pending)
                 elif name in ("grpSp", "spTree"):
-                    shapes(child, rels, lines)
+                    stack.append(iter(child))
                 elif name == "AlternateContent":
                     choice = next((e for e in child if local_name(e) == "Choice"), None)
                     if choice is not None:
-                        shapes(choice, rels, lines)
+                        stack.append(iter(choice))
 
         for index, part in enumerate(slides, 1):
             rels = self.relationships(part)
