@@ -26,6 +26,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from .. import __version__
+from .document import write_recovered_document
 from .decoder import (
     CONTENT_YIELDING_VALIDATION,
     MAX_DECODED_BYTES,
@@ -708,6 +709,13 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_e
         "images": image_records,
         "fragments": fragment_records,
     }
+    # recovered_document.md is a reading aid: a failure here is recorded and never affects recovery.
+    try:
+        manifest["recovered_document"] = write_recovered_document(entries, manifest, output_directory)
+        manifest["recovered_document_error"] = None
+    except Exception as error:  # noqa: BLE001
+        manifest["recovered_document"] = None
+        manifest["recovered_document_error"] = f"{type(error).__name__}: {error}"
     (output_directory / "recovery_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

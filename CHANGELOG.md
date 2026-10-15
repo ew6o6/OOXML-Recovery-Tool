@@ -25,9 +25,10 @@ The recovery engine is unchanged: decoding, validation statuses, decoded XML, im
 - Python API: `get_file_hex` returns `RecoveryResult(entries, extension, output_directory, overall_status)`.
 
 ### Added
+- `recovered_document.md`: the recovered content of each input as one document in reading order, with image positions linked to `img/`, a warning at every part that may be non-original, and an index of parts and images by validation status. Manifest fields `recovered_document` and `recovered_document_error`.
 - `--version`, `-r/--recursive`, `--dump-entries`, `--max-part-size MIB`.
 - Exit status: 0 complete, 1 partial, 2 failed, indeterminate, or not OOXML.
-- 12 unit tests (43 in total).
+- 18 unit tests (49 in total).
 
 ### Removed
 - Unused code: `main_dispatcher.py`, `decode_utf8`, `decompress_deflate_hex`, `decompress_deflate_bytes`, `is_structurally_valid_ooxml_raw`, `extract_local_file_names_raw`, `parse_xlsx_rels_file`, `extract_file_name`, and the unused DOCX style lookup.

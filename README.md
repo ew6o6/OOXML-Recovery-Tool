@@ -52,6 +52,7 @@ Each input `NAME.ext` produces a new folder `output_NAME.ext/`. An existing fold
 
 ```
 output_report.docx/
+├── recovered_document.md         the recovered content in reading order, with image positions and labels
 ├── recovery_manifest.json        status of the package and of every entry (schema v3)
 ├── metadata.txt                  docProps/core.xml and docProps/app.xml
 ├── relationships.txt             every recovered .rels part, grouped by source part
@@ -72,6 +73,7 @@ output_report.docx/
 └── fragments/                    only with --salvage-fragments
 ```
 
+- **`recovered_document.md`.** One readable document per input. *Document information* gives the input hash, the tool, the statuses, and the document properties. *Recovered content* follows the reading order (DOCX body, headers, footers, notes, comments; XLSX sheets in workbook order; PPTX slides in presentation order with speaker notes); each section names its part and validation status, warns where a part may be non-original, and shows each image where it is referenced (`[Image N]`) with a link to its file in `img/`. *Labels* indexes every part and image by validation status with its byte location. The document is a reading aid: the exact text and parts are in `text/` and `parts/`, and a failure to write it is recorded in the manifest (`recovered_document_error`) without affecting recovery.
 - **Provenance header.** Every text and CSV file starts with a line such as `# source: word/document.xml | prefix_validated | start of the part only; the end may contain non-original text`. The same header precedes each part in `document_content.txt` and each block in `metadata.txt`.
 - **Part numbers.** `sheet2.csv` and `slide3.txt` come from `sheet2.xml` and `slide3.xml`. Numbers are never reassigned when other parts are missing. When `xl/workbook.xml` survives, the sheet's display name is added to the CSV header.
 - **XLSX values.** `sheetN.csv` shows the stored value of each cell (shared strings resolved, cached formula results, `TRUE`/`FALSE`). Dates stay as Excel serial numbers. `sheetN_cells.csv` lists the cell type, raw value, resolved value, formula, and number format of every cell.
