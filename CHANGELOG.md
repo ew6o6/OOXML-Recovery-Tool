@@ -21,12 +21,13 @@ The recovery engine is unchanged: decoding, validation statuses, decoded XML, im
 - One `relationships.txt` lists every recovered `.rels` part, including `TargetMode`.
 - Every text and CSV file starts with a provenance line: source part, validation status, and its meaning.
 - Manifest: `schema_version` 3, `output_layout`, `tool_version`, `max_part_size_bytes`, `evaluation_definitions_v2_1`, entry field `extension` (was `img_ext`), and `tail_may_be_non_original` on `prefix_validated` entries.
+- A rejected STORED image whose bytes are one repeated value (e.g. zero-filled) is no longer written to `img/rejected_stored/`; the image record gives the value in `uniform_fill_byte` (`null` otherwise).
 - Python API: `get_file_hex` returns `RecoveryResult(entries, extension, output_directory, overall_status)`.
 
 ### Added
 - `--version`, `-r/--recursive`, `--dump-entries`, `--max-part-size MIB`.
 - Exit status: 0 complete, 1 partial, 2 failed, indeterminate, or not OOXML.
-- 11 unit tests (42 in total).
+- 12 unit tests (43 in total).
 
 ### Removed
 - Unused code: `main_dispatcher.py`, `decode_utf8`, `decompress_deflate_hex`, `decompress_deflate_bytes`, `is_structurally_valid_ooxml_raw`, `extract_local_file_names_raw`, `parse_xlsx_rels_file`, `extract_file_name`, and the unused DOCX style lookup.

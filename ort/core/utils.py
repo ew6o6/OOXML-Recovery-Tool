@@ -291,8 +291,10 @@ def _image_summary_status(integrity, format_validation, recognized):
 def extract_img_file(entries, output_path):
     """Validate and preserve decoded media without inventing an extension.
 
-    Rejected bytes (content_validation_status=rejected) are never written; only their
-    payload offset and size are recorded.
+    Rejected bytes (content_validation_status=rejected) are not written; their payload offset and
+    size are recorded. A rejected STORED image is the exception: its bytes are written as a
+    diagnostic .bin, unless they are one repeated byte value (e.g. a zero-filled area), which carries
+    no content and is recorded in the manifest as uniform_fill_byte instead.
     """
     output_root = Path(output_path)
     types = content_type_map(entries)
@@ -326,12 +328,17 @@ def extract_img_file(entries, output_path):
                 reason=item.get("content_validation_reason") or item.get("decode_error") or "no decoded media bytes",
                 diagnostic_output=None,
                 diagnostic_sha256=None,
+                uniform_fill_byte=None,
             )
             # Decision 2026-10-13: rejected STORED image bytes are kept as a diagnostic .bin.
             # The record stays "rejected" and is not counted as a preserved image.
+            # Decision 2026-10-16: bytes that are one repeated value are not written (no content);
+            # the value is recorded so that the fill itself remains visible in the manifest.
             diagnostic_hex = item.get("rejected_stored_image_hex")
-            if diagnostic_hex:
-                diagnostic = bytes.fromhex(diagnostic_hex)
+            diagnostic = bytes.fromhex(diagnostic_hex) if diagnostic_hex else b""
+            if diagnostic and diagnostic.count(diagnostic[:1]) == len(diagnostic):
+                record["uniform_fill_byte"] = f"0x{diagnostic[0]:02X}"
+            elif diagnostic:
                 target_dir = output_root / "rejected_stored"
                 target_dir.mkdir(parents=True, exist_ok=True)
                 filename = sanitize_part_basename(name) + ".bin"
