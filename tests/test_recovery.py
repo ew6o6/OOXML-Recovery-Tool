@@ -320,6 +320,24 @@ class StatusV2Tests(unittest.TestCase):
         self.assertEqual((out / record["diagnostic_output"]).read_bytes(), bytes(damaged[start:start + size]))
         entry = next(item for item in manifest["entries"] if item["local_file_name"] == "word/media/image1.png")
         self.assertNotIn("rejected_stored_image_hex", entry)
+        self.assertIsNone(record["uniform_fill_byte"])
+
+    def test_uniformly_filled_stored_image_has_no_diagnostic_bin(self):
+        image = png_bytes() * 20
+        original = package({"word/document.xml": BODY, "word/media/image1.png": image},
+                           compression=zipfile.ZIP_STORED)
+        _, start, size = entry_layout(original, "word/media/image1.png")
+        for fill in (0x00, 0xFF):
+            damaged = bytearray(original)
+            damaged[start:start + size] = bytes([fill]) * size  # the whole data area is one value
+            manifest, out = run_tool(bytes(damaged), f"storedfill{fill:02x}")
+            record = next(item for item in manifest["images"] if item["name"] == "word/media/image1.png")
+            self.assertEqual(record["status"], "rejected")
+            self.assertEqual(record["rejected_bytes"], size)
+            self.assertEqual(record["uniform_fill_byte"], f"0x{fill:02X}")
+            self.assertIsNone(record["diagnostic_output"])
+            self.assertIsNone(record["diagnostic_sha256"])
+            self.assertFalse((out / "img" / "rejected_stored").exists())
 
     def test_rejected_deflate_image_has_no_diagnostic_bin(self):
         image = png_bytes() * 50

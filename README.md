@@ -76,7 +76,7 @@ output_report.docx/
 - **Part numbers.** `sheet2.csv` and `slide3.txt` come from `sheet2.xml` and `slide3.xml`. Numbers are never reassigned when other parts are missing. When `xl/workbook.xml` survives, the sheet's display name is added to the CSV header.
 - **XLSX values.** `sheetN.csv` shows the stored value of each cell (shared strings resolved, cached formula results, `TRUE`/`FALSE`). Dates stay as Excel serial numbers. `sheetN_cells.csv` lists the cell type, raw value, resolved value, formula, and number format of every cell.
 - **`parts/`.** Each file is the decoded part (XML or binary, e.g. embedded workbooks) with the original path. The manifest entry records its `output` path and SHA-256.
-- **Rejected bytes.** Bytes with no evidence of being the claimed content are **not written**; the manifest records only their offset and size. The one exception is a rejected STORED image: its bytes are still original data after the damaged region, so they are written as a diagnostic `.bin` file, and the image stays `rejected`.
+- **Rejected bytes.** Bytes with no evidence of being the claimed content are **not written**; the manifest records only their offset and size. The one exception is a rejected STORED image: its bytes are still original data after the damaged region, so they are written as a diagnostic `.bin` file, and the image stays `rejected`. If those bytes are one repeated value (for example a zero-filled area), no file is written; the manifest records the value in `uniform_fill_byte`.
 
 ### Validation status of a part
 
