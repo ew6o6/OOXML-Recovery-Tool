@@ -709,7 +709,7 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_e
         "images": image_records,
         "fragments": fragment_records,
     }
-    # Reading outputs (rebuilt document, PDF preview, recovered_document.html): failures are recorded in
+    # Reading outputs (rebuilt document, PDF preview, recovered_report.html): failures are recorded in
     # their manifest fields and never affect recovery.
     manifest.update(write_reading_outputs(entries, manifest, output_directory, make_pdf=make_pdf))
     (output_directory / "recovery_manifest.json").write_text(

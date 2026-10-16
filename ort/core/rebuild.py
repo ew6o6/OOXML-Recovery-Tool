@@ -156,7 +156,7 @@ def rebuild_xlsx(content, manifest, out_dir, target):
     def add_comment(cell, text):
         cell.comment = Comment(text + (f"\n{cell.comment.text}" if cell.comment else ""), "ORT")
 
-    content.build()  # numbers the images as in recovered_document.html
+    content.build()  # numbers the images as in recovered_report.html
     workbook = Workbook()
     info = workbook.active
     info.title = "ORT recovery"
