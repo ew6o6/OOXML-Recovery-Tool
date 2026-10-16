@@ -26,7 +26,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from .. import __version__
-from .document import write_recovered_document
+from .document import write_reading_outputs
 from .decoder import (
     CONTENT_YIELDING_VALIDATION,
     MAX_DECODED_BYTES,
@@ -597,7 +597,7 @@ def _write_parts(entries, output_directory):
 
 
 def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_entries=False,
-                 max_part_size=MAX_DECODED_BYTES):
+                 max_part_size=MAX_DECODED_BYTES, make_pdf=True):
     """Recover one file: write its output folder and recovery manifest (schema v3).
 
     Returns RecoveryResult(entries, extension, output_directory, overall_status). When nothing
@@ -709,13 +709,9 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_e
         "images": image_records,
         "fragments": fragment_records,
     }
-    # recovered_document.md is a reading aid: a failure here is recorded and never affects recovery.
-    try:
-        manifest["recovered_document"] = write_recovered_document(entries, manifest, output_directory)
-        manifest["recovered_document_error"] = None
-    except Exception as error:  # noqa: BLE001
-        manifest["recovered_document"] = None
-        manifest["recovered_document_error"] = f"{type(error).__name__}: {error}"
+    # Reading outputs (rebuilt document, PDF preview, recovered_document.html): failures are recorded in
+    # their manifest fields and never affect recovery.
+    manifest.update(write_reading_outputs(entries, manifest, output_directory, make_pdf=make_pdf))
     (output_directory / "recovery_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

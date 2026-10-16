@@ -2,3 +2,5 @@ beautifulsoup4
 lxml
 python-docx
 pillow
+openpyxl
+python-pptx

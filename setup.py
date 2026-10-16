@@ -14,6 +14,8 @@ setup(
         'lxml',
         'python-docx',
         'pillow',
+        'openpyxl',
+        'python-pptx',
     ],
     entry_points={
         'console_scripts': [

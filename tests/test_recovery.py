@@ -108,7 +108,7 @@ class ApprovedRecoveryTests(unittest.TestCase):
             output_root = Path(temp_dir) / "results"
             input_path.write_bytes(b"J" * 64 + package({"word/document.xml": BODY}))
             with contextlib.redirect_stdout(io.StringIO()):
-                result = get_file_hex(str(input_path), output_root=output_root)
+                result = get_file_hex(str(input_path), output_root=output_root, make_pdf=False)
             self.assertEqual(result.extension, ".docx")
             self.assertNotIn("J", "".join(item["local_file_name"] for item in result.entries))
             manifest = json.loads((output_root / "output_prefixed.docx" / "recovery_manifest.json").read_text())
@@ -120,7 +120,7 @@ class ApprovedRecoveryTests(unittest.TestCase):
             output_root = Path(temp_dir) / "results"
             input_path.write_bytes(package({"word/footer1.xml": FOOTER}))
             with contextlib.redirect_stdout(io.StringIO()):
-                extension = get_file_hex(str(input_path), output_root=output_root).extension
+                extension = get_file_hex(str(input_path), output_root=output_root, make_pdf=False).extension
             self.assertEqual(extension, ".docx")
             out = output_root / "output_footer_only.docx"
             manifest = json.loads((out / "recovery_manifest.json").read_text())
@@ -140,7 +140,7 @@ class ApprovedRecoveryTests(unittest.TestCase):
             output_root = Path(temp_dir) / "results"
             input_path.write_bytes(package({"word/document.xml": BODY}))
             with contextlib.redirect_stdout(io.StringIO()):
-                get_file_hex(str(input_path), output_root=output_root)
+                get_file_hex(str(input_path), output_root=output_root, make_pdf=False)
             out = output_root / "output_clean.docx"
             manifest = json.loads((out / "recovery_manifest.json").read_text())
             self.assertEqual(manifest["inventory_status"], "complete")
@@ -170,7 +170,7 @@ class ApprovedRecoveryTests(unittest.TestCase):
                 package({"word/document.xml": BODY, "word/media/original.emf": bytes(emf)})
             )
             with contextlib.redirect_stdout(io.StringIO()):
-                get_file_hex(str(input_path), output_root=output_root)
+                get_file_hex(str(input_path), output_root=output_root, make_pdf=False)
             out = output_root / "output_media.docx"
             manifest = json.loads((out / "recovery_manifest.json").read_text())
             image = manifest["images"][0]
@@ -224,7 +224,7 @@ def run_tool(data, stem, salvage=False):
     input_path = Path(temp_dir) / f"{stem}.docx"
     input_path.write_bytes(data)
     with contextlib.redirect_stdout(io.StringIO()):
-        get_file_hex(str(input_path), output_root=Path(temp_dir) / "results", salvage_fragments=salvage)
+        get_file_hex(str(input_path), output_root=Path(temp_dir) / "results", salvage_fragments=salvage, make_pdf=False)
     out = Path(temp_dir) / "results" / f"output_{stem}.docx"
     return json.loads((out / "recovery_manifest.json").read_text(encoding="utf-8")), out
 
@@ -479,6 +479,7 @@ def run_named(parts, file_name, **options):
     input_path = temp_dir / file_name
     input_path.write_bytes(package(parts))
     with contextlib.redirect_stdout(io.StringIO()):
+        options.setdefault("make_pdf", False)  # PDF conversion is tested separately
         result = get_file_hex(str(input_path), output_root=temp_dir / "results", **options)
     manifest = json.loads((result.output_directory / "recovery_manifest.json").read_text(encoding="utf-8"))
     return manifest, result.output_directory
@@ -542,7 +543,7 @@ class Release030Tests(unittest.TestCase):
                                  (".pptx", {"ppt/slides/slide1.xml": b"<p:sld/>"})):
             (temp_dir / f"same{extension}").write_bytes(package(parts))
         with contextlib.redirect_stdout(io.StringIO()):
-            folders = [get_file_hex(str(temp_dir / name), output_root=temp_dir / "out").output_directory.name
+            folders = [get_file_hex(str(temp_dir / name), output_root=temp_dir / "out", make_pdf=False).output_directory.name
                        for name in ("same.docx", "same.xlsx", "same.pptx", "same.docx")]
         self.assertEqual(folders, ["output_same.docx", "output_same.xlsx", "output_same.pptx", "output_same.docx_2"])
 
@@ -629,11 +630,11 @@ class Release030Tests(unittest.TestCase):
         (temp_dir / "partial.docx").write_bytes(truncated_body_entry())
         (temp_dir / "notes.txt").write_text("not a package")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main([str(temp_dir / "sub" / "good.docx")]), 0)
-            self.assertEqual(main([str(temp_dir / "partial.docx")]), 1)
-            self.assertEqual(main([str(temp_dir)]), 2)  # notes.txt is not OOXML
-            self.assertEqual(main([str(temp_dir / "sub"), "-r"]), 0)  # output_good.docx is skipped
-            self.assertEqual(main([str(temp_dir / "missing")]), 2)
+            self.assertEqual(main([str(temp_dir / "sub" / "good.docx"), "--no-pdf"]), 0)
+            self.assertEqual(main([str(temp_dir / "partial.docx"), "--no-pdf"]), 1)
+            self.assertEqual(main([str(temp_dir), "--no-pdf"]), 2)  # notes.txt is not OOXML
+            self.assertEqual(main([str(temp_dir / "sub"), "-r", "--no-pdf"]), 0)  # output_good.docx is skipped
+            self.assertEqual(main([str(temp_dir / "missing"), "--no-pdf"]), 2)
             with self.assertRaises(SystemExit) as raised:
                 main(["--version"])
         self.assertEqual(raised.exception.code, 0)
@@ -656,106 +657,206 @@ def rels(*items):
     return f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{body}</Relationships>'.encode()
 
 
-class RecoveredDocumentTests(unittest.TestCase):
-    def test_docx_image_position_and_label_index(self):
-        document = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' + DML
-                    + b' ' + RNS + b'><w:body><w:p><w:r><w:t>Before</w:t></w:r><w:r><w:drawing><a:graphic>'
-                    b'<a:graphicData><a:blip r:embed="rId5"/></a:graphicData></a:graphic></w:drawing></w:r>'
-                    b'<w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>')
-        manifest, out = run_named({"word/document.xml": document, "word/media/image1.png": png_bytes(),
-                                   "word/_rels/document.xml.rels": rels(("rId5", "media/image1.png", "image"))},
-                                  "doc.docx")
-        self.assertEqual(manifest["recovered_document"], "recovered_document.md")
-        self.assertIsNone(manifest["recovered_document_error"])
-        text = (out / "recovered_document.md").read_text(encoding="utf-8")
-        self.assertIn("### Body (`word/document.xml`) — crc_verified", text)
-        self.assertIn("Before[Image 1]After", text)
-        self.assertIn("![Image 1](<img/verified/image1.png>)", text)
-        labels = text.split("## Labels", 1)[1]
-        self.assertIn('`word/document.xml`: "Body"', labels)
-        self.assertIn("Image 1: `word/media/image1.png`", labels)
+class ReadingOutputTests(unittest.TestCase):
+    """recovered_document.html, the rebuilt document, and the PDF preview field."""
 
-    def test_prefix_is_marked_at_the_damage_point(self):
-        _, out = run_tool(truncated_body_entry(), "prefixdoc")
-        text = (out / "recovered_document.md").read_text(encoding="utf-8")
-        body = text.split("## Labels", 1)[0]
-        self.assertIn("— prefix_validated", body)
-        self.assertTrue(body.rstrip().endswith("the text just above may be non-original."))
-        self.assertIn("### prefix_validated", text.split("## Labels", 1)[1])
+    DOC_WITH_IMAGE = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' + DML
+                      + b' ' + RNS + b'><w:body><w:p><w:r><w:t>Before</w:t></w:r><w:r><w:drawing><a:graphic>'
+                      b'<a:graphicData><a:blip r:embed="rId5"/></a:graphicData></a:graphic></w:drawing></w:r>'
+                      b'<w:r><w:t>After</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>R1C1</w:t></w:r></w:p></w:tc>'
+                      b'<w:tc><w:p><w:r><w:t>R1C2</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>R2C1</w:t>'
+                      b'</w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>R2C2</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
 
-    def test_xlsx_sheet_order_cells_and_anchored_image(self):
-        sheet = (b'<worksheet ' + SSML + b' ' + RNS + b'><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row>'
-                 b'</sheetData><drawing r:id="rId1"/></worksheet>')
+    def docx_parts(self):
+        return {"word/document.xml": self.DOC_WITH_IMAGE, "word/media/image1.png": png_bytes(),
+                "word/_rels/document.xml.rels": rels(("rId5", "media/image1.png", "image"))}
+
+    def xlsx_parts(self):
+        sheet = (b'<worksheet ' + SSML + b' ' + RNS + b'><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c>'
+                 b'<c r="B1"><v>42</v></c></row></sheetData><drawing r:id="rId1"/></worksheet>')
         drawing = (b'<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
                    + DML + b' ' + RNS + b'><xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff>'
                    b'<xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:pic><xdr:blipFill>'
                    b'<a:blip r:embed="rId1"/></xdr:blipFill></xdr:pic></xdr:twoCellAnchor></xdr:wsDr>')
         workbook = (b'<workbook ' + SSML + b' ' + RNS + b'><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/>'
                     b'</sheets></workbook>')
-        shared = b'<sst ' + SSML + b'><si><t>Cell</t></si></sst>'
-        parts = {"xl/workbook.xml": workbook, "xl/_rels/workbook.xml.rels": rels(("rId1", "worksheets/sheet1.xml", "worksheet")),
-                 "xl/worksheets/sheet1.xml": sheet, "xl/sharedStrings.xml": shared,
-                 "xl/worksheets/_rels/sheet1.xml.rels": rels(("rId1", "../drawings/drawing1.xml", "drawing")),
-                 "xl/drawings/drawing1.xml": drawing,
-                 "xl/drawings/_rels/drawing1.xml.rels": rels(("rId1", "../media/image1.png", "image")),
-                 "xl/media/image1.png": png_bytes()}
-        _, out = run_named(parts, "book.xlsx")
-        text = (out / "recovered_document.md").read_text(encoding="utf-8")
-        self.assertIn("### Sheet 1 'Sales' (`xl/worksheets/sheet1.xml`) — crc_verified", text)
-        self.assertIn("- Row 1: A1=Cell", text)
-        self.assertIn("- At C5: [Image 1]", text)
+        return {"xl/workbook.xml": workbook, "xl/_rels/workbook.xml.rels": rels(("rId1", "worksheets/sheet1.xml", "worksheet")),
+                "xl/worksheets/sheet1.xml": sheet, "xl/sharedStrings.xml": b'<sst ' + SSML + b'><si><t>Cell</t></si></sst>',
+                "xl/worksheets/_rels/sheet1.xml.rels": rels(("rId1", "../drawings/drawing1.xml", "drawing")),
+                "xl/drawings/drawing1.xml": drawing,
+                "xl/drawings/_rels/drawing1.xml.rels": rels(("rId1", "../media/image1.png", "image")),
+                "xl/media/image1.png": png_bytes()}
 
-    def test_pptx_presentation_order_picture_and_notes(self):
+    def pptx_parts(self):
         presentation = (b'<p:presentation ' + PML + b' ' + RNS + b'><p:sldIdLst><p:sldId id="256" r:id="rId2"/>'
                         b'</p:sldIdLst></p:presentation>')
-        slide = (b'<p:sld ' + PML + b' ' + DML + b' ' + RNS + b'><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r>'
+        slide = (b'<p:sld ' + PML + b' ' + DML + b' ' + RNS + b'><p:cSld><p:spTree><p:sp><p:spPr><a:xfrm>'
+                 b'<a:off x="457200" y="457200"/><a:ext cx="4572000" cy="914400"/></a:xfrm></p:spPr><p:txBody><a:p><a:r>'
                  b'<a:t>Title text</a:t></a:r></a:p></p:txBody></p:sp><p:pic><p:blipFill><a:blip r:embed="rId3"/>'
-                 b'</p:blipFill></p:pic></p:spTree></p:cSld></p:sld>')
+                 b'</p:blipFill><p:spPr><a:xfrm><a:off x="457200" y="1828800"/><a:ext cx="914400" cy="914400"/></a:xfrm>'
+                 b'</p:spPr></p:pic></p:spTree></p:cSld></p:sld>')
         notes = (b'<p:notes ' + PML + b' ' + DML + b'><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/>'
                  b'</p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Speaker note</a:t></a:r></a:p></p:txBody></p:sp>'
                  b'</p:spTree></p:cSld></p:notes>')
-        parts = {"ppt/presentation.xml": presentation,
-                 "ppt/_rels/presentation.xml.rels": rels(("rId2", "slides/slide2.xml", "slide")),
-                 "ppt/slides/slide2.xml": slide, "ppt/notesSlides/notesSlide1.xml": notes,
-                 "ppt/slides/_rels/slide2.xml.rels": rels(("rId3", "../media/image1.png", "image"),
-                                                          ("rId4", "../notesSlides/notesSlide1.xml", "notesSlide")),
-                 "ppt/media/image1.png": png_bytes()}
-        _, out = run_named(parts, "deck.pptx")
-        text = (out / "recovered_document.md").read_text(encoding="utf-8")
-        self.assertIn("### Slide 1 (`ppt/slides/slide2.xml`) — crc_verified", text)
-        self.assertLess(text.index("Title text"), text.index("[Image 1]"))
-        self.assertIn("### Slide 1 notes (`ppt/notesSlides/notesSlide1.xml`)", text)
-        self.assertIn("Speaker note", text)
+        return {"ppt/presentation.xml": presentation,
+                "ppt/_rels/presentation.xml.rels": rels(("rId2", "slides/slide2.xml", "slide")),
+                "ppt/slides/slide2.xml": slide, "ppt/notesSlides/notesSlide1.xml": notes,
+                "ppt/slides/_rels/slide2.xml.rels": rels(("rId3", "../media/image1.png", "image"),
+                                                         ("rId4", "../notesSlides/notesSlide1.xml", "notesSlide")),
+                "ppt/media/image1.png": png_bytes()}
 
-    def test_uniformly_filled_image_is_described_without_a_file(self):
+    def html(self, out):
+        return (out / "recovered_document.html").read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------ recovered_document.html
+    def test_html_docx_image_position_table_and_label_index(self):
+        manifest, out = run_named(self.docx_parts(), "doc.docx")
+        self.assertEqual(manifest["recovered_document"], {"path": "recovered_document.html", "error": None})
+        self.assertFalse((out / "recovered_document.md").exists())
+        page = self.html(out)
+        self.assertIn('Before<span class="mark">Image 1</span>After', page)
+        self.assertIn('<img src="img/verified/image1.png"', page)
+        self.assertEqual(page.count('<table class="doc">'), 1)  # consecutive rows form one table
+        self.assertIn("R2C2", page)
+        labels = page.split('id="labels"', 1)[1]
+        self.assertIn("word/document.xml: “Body”", labels)
+        self.assertNotIn("<script", page.lower())
+
+    def test_html_escapes_recovered_text(self):
+        document = BODY.replace(b"Hel", b"&lt;script&gt;alert(1)&lt;/script&gt;Hel")
+        _, out = run_named({"word/document.xml": document}, "escape.docx")
+        page = self.html(out)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script>alert", page)
+
+    def test_html_marks_the_damage_point_after_a_prefix(self):
+        _, out = run_tool(truncated_body_entry(), "prefixdoc")
+        page = self.html(out)
+        article = page.split('id="part-1"', 1)[1].split("</article>", 1)[0]
+        self.assertIn("prefix_validated", article)
+        self.assertTrue(article.rstrip().endswith("the text just above may be non-original.</div>\n</div>"))
+
+    def test_html_xlsx_grid_and_anchored_image(self):
+        _, out = run_named(self.xlsx_parts(), "book.xlsx")
+        page = self.html(out)
+        self.assertIn("Sheet 1 &#x27;Sales&#x27;", page)
+        self.assertIn("<th>A</th><th>B</th>", page)
+        self.assertIn('<td class="rn">1</td><td>Cell</td><td>42</td>', page)
+        self.assertIn("At C5: ", page)
+
+    def test_html_pptx_order_picture_and_notes(self):
+        _, out = run_named(self.pptx_parts(), "deck.pptx")
+        page = self.html(out)
+        self.assertIn("<h3>Slide 1</h3><span class=\"path\">ppt/slides/slide2.xml</span>", page)
+        self.assertLess(page.index("Title text"), page.index('<span class="mark">Image 1</span>'))
+        self.assertIn("<h3>Slide 1 notes</h3>", page)
+
+    def test_html_describes_a_uniformly_filled_image(self):
         original = package({"word/document.xml": BODY, "word/media/image1.png": png_bytes() * 20},
                            compression=zipfile.ZIP_STORED)
         _, start, size = entry_layout(original, "word/media/image1.png")
-        damaged = original[:start] + b"\x00" * size + original[start + size:]
-        _, out = run_tool(damaged, "zerodoc")
-        text = (out / "recovered_document.md").read_text(encoding="utf-8")
-        self.assertIn("its data area is filled with 0x00", text)
-        self.assertIn("### rejected", text)
+        _, out = run_tool(original[:start] + b"\x00" * size + original[start + size:], "zerodoc")
+        self.assertIn("its data area is filled with 0x00", self.html(out))
 
     def test_deeply_nested_xml_does_not_exceed_the_recursion_limit(self):
         depth = 3000  # deeper than Python's default recursion limit (1000)
         nested = b"<w:r>" * depth + b"<w:t>deep text</w:t>" + b"</w:r>" * depth
         document = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
-                    b'<w:sdt><w:sdtContent>' * 1 + b'<w:p>' + nested + b'</w:p>' + b'</w:sdtContent></w:sdt>'
-                    b'</w:body></w:document>')
+                    b"<w:sdt><w:sdtContent><w:p>" + nested + b"</w:p></w:sdtContent></w:sdt></w:body></w:document>")
         manifest, out = run_named({"word/document.xml": document}, "deep.docx")
-        self.assertIsNone(manifest["recovered_document_error"])
-        self.assertIn("deep text", (out / "recovered_document.md").read_text(encoding="utf-8"))
+        self.assertIsNone(manifest["recovered_document"]["error"])
+        self.assertIsNone(manifest["rebuilt_document"]["error"])
+        self.assertIn("deep text", self.html(out))
 
-    def test_document_failure_does_not_affect_recovery(self):
+    def test_a_failing_reading_output_does_not_affect_recovery(self):
         from unittest import mock
-        with mock.patch("ort.core.extractor.write_recovered_document", side_effect=RuntimeError("boom")):
+        with mock.patch("ort.core.document.render_html", side_effect=RuntimeError("boom")):
             manifest, out = run_tool(package({"word/document.xml": BODY}), "isolated")
         self.assertEqual(manifest["overall_status"], "complete")
-        self.assertIsNone(manifest["recovered_document"])
-        self.assertEqual(manifest["recovered_document_error"], "RuntimeError: boom")
-        self.assertFalse((out / "recovered_document.md").exists())
+        self.assertEqual(manifest["recovered_document"], {"path": None, "error": "RuntimeError: boom"})
+        self.assertFalse((out / "recovered_document.html").exists())
+        self.assertTrue((out / manifest["rebuilt_document"]["path"]).exists())
         self.assertTrue((out / "text" / "word_document.xml.txt").exists())
+
+    # ------------------------------------------------------------------ rebuilt document
+    def test_rebuilt_docx_has_banner_content_table_image_and_labels(self):
+        from docx import Document
+        manifest, out = run_named(self.docx_parts(), "doc.docx")
+        self.assertEqual(manifest["rebuilt_document"], {"path": "recovered_doc.docx", "error": None})
+        document = Document(str(out / "recovered_doc.docx"))
+        text = "\n".join(p.text for p in document.paragraphs)
+        self.assertTrue(text.startswith("Rebuilt by ORT from the recovered content. This is NOT the original document"))
+        self.assertIn("BeforeAfter", text.replace("[Image 1]", ""))
+        self.assertEqual(len(document.tables), 1)
+        self.assertEqual(document.tables[0].cell(1, 1).text, "R2C2")
+        self.assertEqual(len(document.inline_shapes), 1)
+        self.assertIn("ORT labels (index by validation status)", text)
+
+    def test_rebuilt_xlsx_keeps_cells_names_formats_and_marks_damage(self):
+        import openpyxl
+        _, out = run_named(self.xlsx_parts(), "book.xlsx")
+        workbook = openpyxl.load_workbook(str(out / "recovered_book.xlsx"))
+        self.assertEqual(workbook.sheetnames, ["ORT recovery", "Sales"])
+        self.assertTrue(str(workbook["ORT recovery"]["A1"].value).startswith("Rebuilt by ORT"))
+        sheet = workbook["Sales"]
+        self.assertEqual((sheet["A1"].value, sheet["B1"].value), ("Cell", 42))
+        self.assertEqual(len(sheet._images), 1)
+        self.assertIsNone(sheet.sheet_properties.tabColor)  # verified sheet: no warning colour
+
+    def test_rebuilt_pptx_keeps_order_positions_pictures_and_notes(self):
+        from pptx import Presentation
+        _, out = run_named(self.pptx_parts(), "deck.pptx")
+        deck = Presentation(str(out / "recovered_deck.pptx"))
+        slides = list(deck.slides)
+        self.assertIn("not the original", slides[0].shapes[0].text_frame.text)
+        recovered = slides[1]
+        texts = [shape.text_frame.text for shape in recovered.shapes if shape.has_text_frame]
+        self.assertIn("Title text", texts)
+        title = next(shape for shape in recovered.shapes if shape.has_text_frame and shape.text_frame.text == "Title text")
+        self.assertEqual((title.left, title.top), (457200, 457200))
+        self.assertEqual(sum(1 for shape in recovered.shapes if shape.shape_type == 13), 1)  # one picture
+        self.assertIn("Speaker note", recovered.notes_slide.notes_text_frame.text)
+
+    # ------------------------------------------------------------------ PDF preview
+    def test_pdf_disabled_records_how_to_obtain_it(self):
+        manifest, _ = run_named({"word/document.xml": BODY}, "nopdf.docx")
+        pdf = manifest["preview_pdf"]
+        self.assertEqual((pdf["status"], pdf["path"], pdf["reason"]), ("disabled", None, "disabled by --no-pdf"))
+        self.assertEqual(pdf["how_to"][0], "Run ORT again without --no-pdf.")
+        self.assertIn("open recovered_nopdf.docx in Word, Excel, PowerPoint, or LibreOffice and save it as PDF.",
+                      pdf["how_to"])
+
+    def test_pdf_skipped_without_a_converter(self):
+        from unittest import mock
+        with mock.patch("ort.core.pdf.find_soffice", return_value=None), mock.patch("ort.core.pdf.sys.platform", "linux"):
+            manifest, out = run_named({"word/document.xml": BODY}, "skip.docx", make_pdf=True)
+        pdf = manifest["preview_pdf"]
+        self.assertEqual(pdf["status"], "skipped")
+        self.assertIn("no PDF converter found", pdf["reason"])
+        self.assertEqual(pdf["how_to"][0], "Install LibreOffice (with 'soffice' on PATH) and run ORT again, or")
+        self.assertIn("PDF preview: skipped", self.html(out))
+
+    def test_pdf_written_by_a_converter_is_recorded_and_linked(self):
+        from unittest import mock
+
+        def fake(soffice, source):
+            source.with_suffix(".pdf").write_bytes(b"%PDF-1.4\n")
+            return "written", None
+        with mock.patch("ort.core.pdf.find_soffice", return_value="soffice"), mock.patch("ort.core.pdf._with_soffice", fake):
+            manifest, out = run_named({"word/document.xml": BODY}, "made.docx", make_pdf=True)
+        self.assertEqual(manifest["preview_pdf"]["status"], "written")
+        self.assertEqual(manifest["preview_pdf"]["converter"], "LibreOffice")
+        self.assertEqual(manifest["preview_pdf"]["path"], "recovered_made.pdf")
+        self.assertIsNone(manifest["preview_pdf"]["how_to"])
+        self.assertIn('href="recovered_made.pdf"', self.html(out))
+
+    def test_cli_no_pdf_option(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        (temp_dir / "cli.docx").write_bytes(package({"word/document.xml": BODY}))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([str(temp_dir / "cli.docx"), "--no-pdf", "--no-pdf"]), 0)
+        manifest = json.loads((temp_dir / "output_cli.docx" / "recovery_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["preview_pdf"]["status"], "disabled")
 
 
 if __name__ == "__main__":
