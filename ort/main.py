@@ -1,65 +1,102 @@
-"""
-main.py - Refactored standalone execution script (based on the original ooxml_code.py)
-role: Command-line interface for processing OOXML files
+"""Command-line interface of the OOXML Recovery Toolkit (ORT).
 
-author: Jiyoon Kim
-last modified date: 2025-05-11
-description: Delegates get_file_hex() call to core.extractor module, establishing a modular architecture
-version: 1.0.0
-history:
-    2025-05-06: Initial version
-    2025-05-07: Introduced logging and argparse
-    2025-05-08: Added user input handling
-    2025-05-09: Added path validation
-    2025-05-10: Added exception handling
-    2025-05-11: Code optimization and comment refinement
+Exit status: 0 when every input is complete, 1 when at least one is partial, and 2 when at
+least one failed, is indeterminate, is not OOXML, or the path holds no file.
 """
 
-import os
-import logging
 import argparse
+import logging
+import os
+
+from . import __version__
+from .core.decoder import MAX_DECODED_BYTES
 from .core.extractor import get_file_hex
 
+MIB = 1024 * 1024
+_EXIT_CODES = {"complete": 0, "partial": 1}
+
+
+def exit_code(status):
+    return _EXIT_CODES.get(status, 2)
+
+
 def setup_logging():
-    """Configure log format and level"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[%(levelname)s] %(message)s'
+    logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+
+
+def _positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="ort",
+        description="Recover document content and images from damaged OOXML files (.docx, .xlsx, .pptx).",
+        epilog="Exit status: 0 = every file complete, 1 = at least one partial, "
+               "2 = at least one failed, indeterminate, or not OOXML.",
     )
+    parser.add_argument("path", help="A file, or a folder whose files are processed")
+    parser.add_argument("--output-root", help="Write each output folder below this directory (default: next to the input)")
+    parser.add_argument("-r", "--recursive", action="store_true",
+                        help="Also process files in subfolders (folders named output_* are skipped)")
+    parser.add_argument("--salvage-fragments", action="store_true",
+                        help="Experimental: save independently decodable XML suffix fragments separately")
+    parser.add_argument("--dump-entries", action="store_true",
+                        help="Also write entries.json with every entry, including payload bytes as hex")
+    parser.add_argument("--max-part-size", type=_positive_int, default=MAX_DECODED_BYTES // MIB, metavar="MIB",
+                        help="Largest decoded size of one part in MiB (default: %(default)s)")
+    parser.add_argument("--no-pdf", action="store_true",
+                        help="Do not convert the rebuilt document to PDF (useful for large batches); "
+                             "the manifest records how to obtain the PDF later")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser.parse_args(argv)
 
-def parse_args():
-    """Define command-line arguments"""
-    parser = argparse.ArgumentParser(description="OOXML damaged file recovery and extraction tool")
-    parser.add_argument("path", help="Path to a .docx, .xlsx file or a directory containing such files")
-    return parser.parse_args()
 
-def process_file(file_path):
-    """Process an individual file"""
-    file_name = os.path.basename(file_path)
-    logging.info(f"Input file: {file_name}")
-    local_file_in_hex, file_ext = get_file_hex(file_path)
-    if local_file_in_hex:
-        logging.info("Processing completed.\n")
-    return local_file_in_hex
+def iter_input_files(path, recursive=False):
+    """Files to process: the path itself, the files of a folder, or (recursive) of its subfolders."""
+    if os.path.isfile(path):
+        yield path
+        return
+    if not recursive:
+        for name in sorted(os.listdir(path)):
+            if os.path.isfile(os.path.join(path, name)):
+                yield os.path.join(path, name)
+        return
+    for root, folders, files in os.walk(path):
+        folders[:] = sorted(folder for folder in folders if not folder.startswith("output_"))
+        for name in sorted(files):
+            yield os.path.join(root, name)
 
-def process_directory_or_file(path):
-    """Branch logic to handle either a single file or all files in a directory"""
-    if os.path.isdir(path):
-        for filename in os.listdir(path):
-            file_path = os.path.join(path, filename)
-            if os.path.isfile(file_path):
-                process_file(file_path)
-    elif os.path.isfile(path):
-        process_file(path)
-    else:
-        logging.error(f"Invalid path: '{path}'")
 
-def main():
-    """Main entry point"""
-    print("Starting OOXML damaged file recovery and extraction tool")
+def process_file(file_path, *, output_root=None, salvage_fragments=False, dump_entries=False,
+                 max_part_size=MAX_DECODED_BYTES, make_pdf=True):
+    """Recover one file and return its RecoveryResult."""
+    logging.info("Input file: %s", file_path)
+    result = get_file_hex(file_path, output_root=output_root, salvage_fragments=salvage_fragments,
+                          dump_entries=dump_entries, max_part_size=max_part_size, make_pdf=make_pdf)
+    if result.output_directory is None:
+        logging.warning("Skipped (%s): %s", result.overall_status, file_path)
+    return result
+
+
+def main(argv=None):
+    """Run the CLI and return the exit status."""
     setup_logging()
-    args = parse_args()
-    process_directory_or_file(args.path)
-
-if __name__ == '__main__':
-    main()
+    args = parse_args(argv)
+    if not os.path.exists(args.path):
+        logging.error("Invalid path: '%s'", args.path)
+        return 2
+    logging.info("ORT %s", __version__)
+    worst = None
+    for file_path in iter_input_files(args.path, args.recursive):
+        result = process_file(file_path, output_root=args.output_root, salvage_fragments=args.salvage_fragments,
+                              dump_entries=args.dump_entries, max_part_size=args.max_part_size * MIB,
+                              make_pdf=not args.no_pdf)
+        worst = max(worst or 0, exit_code(result.overall_status))
+    if worst is None:
+        logging.error("No file found in '%s'", args.path)
+        return 2
+    return worst

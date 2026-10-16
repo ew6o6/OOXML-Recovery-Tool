@@ -1,172 +1,176 @@
-import os
+"""Shared XML-to-text and XML-to-table helpers for the format handlers."""
+
+import posixpath
 import re
-import csv
+
 from bs4 import BeautifulSoup
 from docx import Document
 
-def parse_styles_xml(styles_xml):
-    """
-    Parses the style definitions in a DOCX styles.xml file.
-    Example return: {"Heading1": {"name": "heading 1", "based_on": "Normal"}}
-    """
-    soup = BeautifulSoup(styles_xml, "lxml")
-    styles = {}
+from ..utils import local_name, parse_xml
 
-    for style in soup.find_all("w:style"):
-        style_id = style.get("w:styleid")
-        name_tag = style.find("w:name")
-        based_on_tag = style.find("w:basedon")
 
-        if style_id:
-            styles[style_id] = {
-                "name": name_tag.get("w:val") if name_tag else "",
-                "based_on": based_on_tag.get("w:val") if based_on_tag else None
-            }
-
-    return styles
-
-def extract_xml_text_for_docx(xml_data: str, styles: dict) -> str:
-    """Extracts paragraphs from DOCX document XML and annotates them with style names."""
-    soup = BeautifulSoup(xml_data, "lxml")
+def extract_xml_text_for_docx(xml_data: str) -> str:
+    """Extract DOCX text without inventing spaces at Word run boundaries."""
+    soup = BeautifulSoup(xml_data, "xml")
     lines = []
-
     for p in soup.find_all('w:p'):
-        style_tag = p.find('w:pstyle')
-        style_id = style_tag.get('w:val') if style_tag else ''
-        style_info = styles.get(style_id, {})
-        style_name = style_info.get('name', '')
-
-        paragraph_text = ' '.join(p.stripped_strings)
-        if style_name:
-            lines.append(f"[{style_name}] {paragraph_text}")
-        else:
-            lines.append(paragraph_text)
-
+        chunks = []
+        for node in p.descendants:
+            if getattr(node, 'name', None) == 't':
+                chunks.append(node.get_text())
+            elif getattr(node, 'name', None) in ('tab', 'br', 'cr'):
+                chunks.append('\t' if node.name == 'tab' else '\n')
+        lines.append(''.join(chunks))
     return '\n'.join(lines)
 
-def save_text_to_docx(text, filename="output.docx"):
-    """Writes text content to a .docx file."""
+
+_XML_INVALID_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def save_text_to_docx(paragraphs, filename):
+    """Write paragraphs to a plain .docx file (characters that XML cannot store become U+FFFD)."""
     doc = Document()
-    doc.add_paragraph(text)
+    for paragraph in paragraphs:
+        doc.add_paragraph(_XML_INVALID_CHARS.sub("�", paragraph))
     doc.save(filename)
 
-def extract_data_from_shared_strings(xml):
-    """Extracts text values from sharedStrings.xml in XLSX files."""
-    return re.findall(r'<t>([^<]+)</t>', xml)
 
-def extract_data_from_sheet(sheet_xml, shared_strings, style_map):
-    """Extracts structured cell data from an XLSX worksheet XML."""
-    soup = BeautifulSoup(sheet_xml, "xml")
-    mapped_data = {}
-    unmapped_data = set(shared_strings)
+# ----------------------------------------------------------------------------- XLSX
 
-    for cell in soup.select("sheetData c"):
-        ref = cell.get("r")
-        if not ref:
+# ECMA-376 Part 1, 18.8.30: built-in number formats (locale-independent ones).
+BUILTIN_NUMBER_FORMATS = {
+    0: "General", 1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00", 9: "0%", 10: "0.00%", 11: "0.00E+00",
+    12: "# ?/?", 13: "# ??/??", 14: "mm-dd-yy", 15: "d-mmm-yy", 16: "d-mmm", 17: "mmm-yy", 18: "h:mm AM/PM",
+    19: "h:mm:ss AM/PM", 20: "h:mm", 21: "h:mm:ss", 22: "m/d/yy h:mm", 37: "#,##0 ;(#,##0)",
+    38: "#,##0 ;[Red](#,##0)", 39: "#,##0.00;(#,##0.00)", 40: "#,##0.00;[Red](#,##0.00)", 45: "mm:ss",
+    46: "[h]:mm:ss", 47: "mmss.0", 48: "##0.0E+0", 49: "@",
+}
+
+
+def _rich_text(node):
+    """Text of a string item: every <t> in order, except phonetic runs (<rPh>), whitespace kept."""
+    pieces = []
+    for element in node.iter():
+        if local_name(element) == "t" and not any(local_name(parent) == "rPh" for parent in element.iterancestors()):
+            pieces.append(element.text or "")
+    return "".join(pieces)
+
+
+def parse_shared_strings(xml):
+    """Shared strings in index order: one entry per <si>, rich-text runs concatenated."""
+    root = parse_xml(xml)
+    if root is None:
+        return []
+    return [_rich_text(item) for item in root.iter() if local_name(item) == "si"]
+
+
+def column_number(letters):
+    number = 0
+    for char in letters.upper():
+        number = number * 26 + ord(char) - 64
+    return number
+
+
+def column_letters(number):
+    letters = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        letters = chr(65 + remainder) + letters
+    return letters
+
+
+def parse_sheet_cells(xml):
+    """Cells of a worksheet in document order. Missing cell references are inferred from position."""
+    root = parse_xml(xml)
+    cells = []
+    if root is None:
+        return cells
+    row_number = 0
+    for row in root.iter():
+        if local_name(row) != "row":
             continue
-
-        row_match = re.search(r"(\d+)", ref)
-        col_match = re.search(r"([A-Z]+)", ref)
-        if not row_match or not col_match:
-            continue
-
-        row = int(row_match.group())
-        col = col_match.group()
-
-        dtype = cell.get("t")
-        s_idx = cell.get("s")
-        fmt = style_map.get(s_idx, "")
-
-        val_tag = cell.find("v")
-        val = val_tag.text if val_tag else ""
-
-        is_tag = cell.find("is")
-        f_tag = cell.find("f")
-
-        if dtype == "inlineStr" and is_tag:
-            t_tag = is_tag.find("t")
-            text = t_tag.text if t_tag else ""
-        elif f_tag:
-            formula = f_tag.text
-            text = f"= {formula}"
-            if val:
-                text += f" → {val}"
-        elif dtype == "s" and val.isdigit():
-            idx = int(val)
-            if idx < len(shared_strings):
-                text = shared_strings[idx]
-                unmapped_data.discard(text)
+        declared_row = row.get("r")
+        row_number = int(declared_row) if declared_row and declared_row.isdigit() else row_number + 1
+        column = 0
+        for cell in row:
+            if local_name(cell) != "c":
+                continue
+            match = re.fullmatch(r"([A-Za-z]{1,3})(\d+)", cell.get("r") or "")
+            if match:
+                column, number = column_number(match.group(1)), int(match.group(2))
             else:
-                text = "INDEX_ERROR"
-        else:
-            text = val
+                column, number = column + 1, row_number
+            value = formula = inline = None
+            for child in cell:
+                name = local_name(child)
+                if name == "v":
+                    value = child.text or ""
+                elif name == "f":
+                    formula = child.text or (f"[shared formula si={child.get('si')}]" if child.get("si") else "")
+                elif name == "is":
+                    inline = _rich_text(child)
+            cells.append({"ref": f"{column_letters(column)}{number}", "row": number, "column": column,
+                          "type": cell.get("t") or "n", "raw": value, "formula": formula, "inline": inline,
+                          "style": cell.get("s")})
+    return cells
 
-        if fmt:
-            text = f"{text} ({fmt})"
 
-        mapped_data.setdefault(row, {})[col] = text
+def resolve_cell(cell, shared_strings):
+    """(display value, shared-string index or None) for a parsed cell."""
+    kind, raw = cell["type"], cell["raw"]
+    if kind == "s":
+        if raw is not None and raw.strip().isdigit():
+            index = int(raw)
+            if index < len(shared_strings):
+                return shared_strings[index], index
+            return f"[shared string #{index} not recovered]", index
+        return raw or "", None
+    if kind == "inlineStr":
+        return cell["inline"] or "", None
+    if kind == "b":
+        return {"1": "TRUE", "0": "FALSE"}.get(raw, raw or ""), None
+    return raw or "", None
 
-    return mapped_data, unmapped_data
 
-def parse_xlsx_styles(styles_xml):
-    """Parses styles.xml from an XLSX file and builds a style mapping dictionary."""
-    soup = BeautifulSoup(styles_xml, "xml")
-    style_map = {}
-    numfmts = {}
+def parse_number_formats(styles_xml):
+    """Number format code per cell style index (cellXfs only; cellStyleXfs are not cell styles)."""
+    root = parse_xml(styles_xml)
+    if root is None:
+        return {}
+    custom = {}
+    cell_xfs = None
+    for element in root.iter():
+        name = local_name(element)
+        if name == "numFmt" and (element.get("numFmtId") or "").isdigit():
+            custom[int(element.get("numFmtId"))] = element.get("formatCode")
+        elif name == "cellXfs" and cell_xfs is None:
+            cell_xfs = element
+    formats = {}
+    for index, xf in enumerate(child for child in (cell_xfs if cell_xfs is not None else ()) if local_name(child) == "xf"):
+        identifier = xf.get("numFmtId") or "0"
+        if identifier.isdigit():
+            number = int(identifier)
+            formats[str(index)] = custom.get(number) or BUILTIN_NUMBER_FORMATS.get(number) or f"numFmtId={number}"
+    return formats
 
-    for fmt in soup.find_all("numFmt"):
-        numfmts[fmt.get("numFmtId")] = fmt.get("formatCode")
 
-    for i, xf in enumerate(soup.find_all("xf")):
-        numfmt_id = xf.get("numFmtId")
-        if numfmt_id in numfmts:
-            style_map[str(i)] = numfmts[numfmt_id]
-        elif numfmt_id:
-            built_in_formats = {
-                '14': 'mm-dd-yy',
-                '22': 'm/d/yy h:mm',
-                '165': 'yyyy/mm/dd',
-                '44': '₩#,##0'
-            }
-            style_map[str(i)] = built_in_formats.get(numfmt_id, '')
-
-    return style_map
-
-def parse_rels_file(rels_xml):
-    """Parses a .rels file and returns relationship entries as strings."""
-    soup = BeautifulSoup(rels_xml, "xml")
-    rels_info = []
-    for rel in soup.find_all("Relationship"):
-        r_id = rel.get("Id")
-        target = rel.get("Target")
-        r_type = rel.get("Type")
-        rels_info.append(f"{r_id}: {target} ({r_type})")
-    return rels_info
-
-def parse_xlsx_rels_file(rels_xml):
-    """Alias for parse_rels_file specific to XLSX context."""
-    return parse_rels_file(rels_xml)
-
-def save_unmapped_to_csv(unmapped, out_dir, filename="unmapped_data.csv"):
-    """Saves a list of unmapped values to a CSV file."""
-    out_path = os.path.join(out_dir, filename)
-    with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["Unmapped Data"])
-        writer.writerows([[val] for val in unmapped])
-
-def display_and_save_table_to_csv(mapped_data, filename, out_dir):
-    """Displays and saves structured table data to a CSV file."""
-    if not mapped_data:
-        return
-
-    rows = sorted(mapped_data.keys())
-    cols = sorted({c for r in mapped_data.values() for c in r})
-
-    table = [[row] + [mapped_data[row].get(col, '') for col in cols] for row in rows]
-    headers = ["Row"] + cols
-
-    with open(os.path.join(out_dir, filename), 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.writer(f)
-        writer.writerow(headers)
-        writer.writerows(table)
+def sheet_display_names(workbook_xml, workbook_rels_xml):
+    """Map worksheet part names to their display names via xl/workbook.xml and its relationships."""
+    workbook, relationships = parse_xml(workbook_xml), parse_xml(workbook_rels_xml)
+    if workbook is None or relationships is None:
+        return {}
+    targets = {}
+    for relationship in relationships.iter():
+        if local_name(relationship) == "Relationship" and relationship.get("Target"):
+            target = relationship.get("Target")
+            part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+            targets[relationship.get("Id")] = part
+    names = {}
+    for sheet in workbook.iter():
+        if local_name(sheet) != "sheet":
+            continue
+        relationship_id = next((value for key, value in sheet.attrib.items()
+                                if key.endswith("}id") and "relationships" in key), None)
+        if relationship_id in targets and sheet.get("name") is not None:
+            names[targets[relationship_id]] = sheet.get("name")
+    return names
