@@ -48,6 +48,9 @@ def parse_args(argv=None):
                         help="Also write entries.json with every entry, including payload bytes as hex")
     parser.add_argument("--max-part-size", type=_positive_int, default=MAX_DECODED_BYTES // MIB, metavar="MIB",
                         help="Largest decoded size of one part in MiB (default: %(default)s)")
+    parser.add_argument("--no-pdf", action="store_true",
+                        help="Do not convert the rebuilt document to PDF (useful for large batches); "
+                             "the manifest records how to obtain the PDF later")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args(argv)
 
@@ -69,11 +72,11 @@ def iter_input_files(path, recursive=False):
 
 
 def process_file(file_path, *, output_root=None, salvage_fragments=False, dump_entries=False,
-                 max_part_size=MAX_DECODED_BYTES):
+                 max_part_size=MAX_DECODED_BYTES, make_pdf=True):
     """Recover one file and return its RecoveryResult."""
     logging.info("Input file: %s", file_path)
     result = get_file_hex(file_path, output_root=output_root, salvage_fragments=salvage_fragments,
-                          dump_entries=dump_entries, max_part_size=max_part_size)
+                          dump_entries=dump_entries, max_part_size=max_part_size, make_pdf=make_pdf)
     if result.output_directory is None:
         logging.warning("Skipped (%s): %s", result.overall_status, file_path)
     return result
@@ -90,7 +93,8 @@ def main(argv=None):
     worst = None
     for file_path in iter_input_files(args.path, args.recursive):
         result = process_file(file_path, output_root=args.output_root, salvage_fragments=args.salvage_fragments,
-                              dump_entries=args.dump_entries, max_part_size=args.max_part_size * MIB)
+                              dump_entries=args.dump_entries, max_part_size=args.max_part_size * MIB,
+                              make_pdf=not args.no_pdf)
         worst = max(worst or 0, exit_code(result.overall_status))
     if worst is None:
         logging.error("No file found in '%s'", args.path)

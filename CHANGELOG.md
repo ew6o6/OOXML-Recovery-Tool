@@ -25,10 +25,14 @@ The recovery engine is unchanged: decoding, validation statuses, decoded XML, im
 - Python API: `get_file_hex` returns `RecoveryResult(entries, extension, output_directory, overall_status)`.
 
 ### Added
-- `recovered_document.md`: the recovered content of each input as one document in reading order, with image positions linked to `img/`, a warning at every part that may be non-original, and an index of parts and images by validation status. Manifest fields `recovered_document` and `recovered_document_error`.
+- Reading outputs for every input, which never affect recovery:
+  - `recovered_document.html`: static page with the recovered content in reading order, image positions linked to `img/`, a warning at every part that may be non-original, and an index of parts and images by status.
+  - `recovered_<name>.<ext>`: the recovered content rebuilt in the input's format (python-docx, openpyxl, python-pptx); not the original, and marked as such.
+  - `recovered_<name>.pdf`: PDF preview through LibreOffice or Microsoft Office (Windows) when installed; `--no-pdf` skips it. Manifest fields `recovered_document`, `rebuilt_document`, and `preview_pdf` (with `how_to` steps when no PDF was written).
+- Dependencies `openpyxl` and `python-pptx`.
 - `--version`, `-r/--recursive`, `--dump-entries`, `--max-part-size MIB`.
 - Exit status: 0 complete, 1 partial, 2 failed, indeterminate, or not OOXML.
-- 18 unit tests (49 in total).
+- 27 unit tests (58 in total).
 
 ### Removed
 - Unused code: `main_dispatcher.py`, `decode_utf8`, `decompress_deflate_hex`, `decompress_deflate_bytes`, `is_structurally_valid_ooxml_raw`, `extract_local_file_names_raw`, `parse_xlsx_rels_file`, `extract_file_name`, and the unused DOCX style lookup.
