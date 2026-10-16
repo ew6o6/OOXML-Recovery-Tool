@@ -730,7 +730,7 @@ class ReadingOutputTests(unittest.TestCase):
         self.assertLess(page.index('id="guide"'), page.index('id="summary"'))
         guide = page.split('id="guide"', 1)[1].split('id="summary"', 1)[0]
         for status in LABEL_ORDER:
-            self.assertIn(f">{status}</span>", guide)
+            self.assertIn(f"<b>{status}</b></span>", guide)
             self.assertIn(LABEL_GUIDE[status][0], guide)
         for overall in ("complete", "partial", "failed", "indeterminate"):
             self.assertIn(f"<b>{overall}</b>", guide)

@@ -402,7 +402,10 @@ header.top{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.96);bor
 header.top .inner{display:flex;align-items:center;gap:28px;height:60px}
 .brand{font-weight:800;letter-spacing:.02em;font-size:20px}.brand small{display:block;font-size:10px;font-weight:600;color:var(--muted);letter-spacing:.08em;margin-top:-4px}
 nav{margin-left:auto;display:flex;gap:24px;font-size:13px;font-weight:600;color:var(--sub)}nav a:hover{color:var(--red)}
-.pill{display:inline-block;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700;color:#fff;white-space:nowrap}
+.tag{display:inline-flex;align-items:center;gap:7px;padding:4px 14px 4px 6px;color:#fff;font-size:12px;font-weight:800;letter-spacing:.02em;white-space:nowrap;line-height:1.4;background:linear-gradient(165deg,var(--a) 0%,var(--b) 55%,var(--c) 100%);clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);box-shadow:inset 0 1px 0 rgba(255,255,255,.4),inset 0 -2px 0 rgba(0,0,0,.14);text-shadow:0 1px 1px rgba(0,0,0,.2)}
+.tag i{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid rgba(255,255,255,.88);border-radius:50%;font-style:normal;font-size:11px;line-height:1;flex:none}.tag b{font-weight:800}
+.tag.lg{gap:10px;padding:9px 20px 9px 9px;font-size:16px;min-width:214px;clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px)}.tag.lg i{width:30px;height:30px;font-size:16px;border-width:2px}
+@media print{.tag{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 .hero{background:radial-gradient(1200px 400px at 85% 0%,#0a1a33 0%,var(--dark) 60%);color:#fff;padding:56px 0 48px}
 .eyebrow{font-size:12px;font-weight:800;letter-spacing:.12em;color:var(--red);text-transform:uppercase}
 .hero h1{font-size:34px;line-height:1.3;margin:10px 0 6px;word-break:break-all}.hero .warn-line{color:#FFB79C;font-weight:600}
@@ -428,7 +431,7 @@ ol.steps .s{font-size:12px;color:var(--sub);display:flex;align-items:center;gap:
 article.part{border:1px solid var(--line);margin:0 0 22px;background:#fff}
 article.part>.ph{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);background:#fffdfb}
 article.part h3{margin:0;font-size:18px}.path{font:12px Consolas,monospace;color:var(--muted)}
-article.part .ph .pill{margin-left:auto}article.part .pb{padding:16px 20px}
+article.part .ph .tag{margin-left:auto}article.part .pb{padding:16px 20px}
 .text{white-space:pre-wrap;margin:0 0 10px;word-break:break-word}
 .callout{border-radius:4px;padding:10px 14px;margin:0 0 14px;font-size:14px;font-weight:600}
 .callout.prefix_validated{background:#FDF0E6;color:#B4501C;border:1px solid #F6D3BE}
@@ -460,9 +463,24 @@ def esc(text):
     return html.escape(str(text), quote=True)
 
 
-def pill(status, text=None, colour=None):
+STATUS_ICONS = {"crc_verified": "\u2713", "structure_verified": "\u25C7", "prefix_validated": "\u25D0",
+                "crc_mismatch": "\u2260", "unverified": "?", "rejected": "\u00D7", "not found": "\u2013"}
+
+
+def shade(colour, amount):
+    """Blend a #RRGGBB colour toward white (amount > 0) or black (amount < 0)."""
+    channels = [int(colour[i:i + 2], 16) for i in (1, 3, 5)]
+    target = 255 if amount > 0 else 0
+    return "#%02X%02X%02X" % tuple(round(c + (target - c) * abs(amount)) for c in channels)
+
+
+def pill(status, text=None, colour=None, large=False, icon=None):
+    """A status tag: chamfered corners, light-to-dark gradient, and an icon in a ring."""
     colour = colour or STATUS_COLOURS.get(status or "not found", STATUS_COLOURS["not found"])
-    return f'<span class="pill" style="background:{colour}">{esc(text or status or "not found")}</span>'
+    icon = icon or STATUS_ICONS.get(status or "not found", "\u25CF")
+    style = f"--a:{shade(colour, .3)};--b:{colour};--c:{shade(colour, -.22)}"
+    return (f'<span class="tag{" lg" if large else ""}" style="{style}"><i>{esc(icon)}</i>'
+            f'<b>{esc(text or status or "not found")}</b></span>')
 
 
 def with_marks(escaped):
@@ -509,7 +527,8 @@ def render_html(content, blocks, manifest, outputs):
          '<header class="top"><div class="inner"><a class="brand" href="#overview">ORT<small>RECOVERED DOCUMENT</small></a>'
          '<nav><a href="#guide">Guide</a><a href="#summary">Overview</a><a href="#contents">Contents</a>'
          '<a href="#content">Recovered content</a><a href="#labels">Label index</a></nav>'
-         + pill(None, f"overall: {m.get('overall_status')}", OVERALL_COLOURS.get(m.get("overall_status"), "#8A847D"))
+         + pill(None, f"overall: {m.get('overall_status')}", OVERALL_COLOURS.get(m.get("overall_status"), "#8A847D"),
+                icon={"complete": "\u2713", "partial": "\u25D0", "failed": "\u00D7"}.get(m.get("overall_status"), "?"))
          + "</div></header>",
          '<div class="hero" id="overview"><div class="inner"><div class="eyebrow">Rebuilt by ORT · not the original</div>',
          f"<h1>{esc(name)}</h1>",
@@ -542,10 +561,10 @@ def render_html(content, blocks, manifest, outputs):
              '<th>In a report</th></tr>')
     for status in LABEL_ORDER:
         meaning, evidence, use = LABEL_GUIDE[status]
-        o.append(f"<tr><td>{pill(status)}</td><td><b>{esc(meaning)}</b></td><td>{esc(evidence)}</td><td>{esc(use)}</td></tr>")
+        o.append(f"<tr><td>{pill(status, large=True)}</td><td><b>{esc(meaning)}</b></td><td>{esc(evidence)}</td><td>{esc(use)}</td></tr>")
     o.append('</table></div><dl class="props legend">'
              '<dt><span class="mark">Image 3</span></dt><dd>where an image appears in the content; the image follows.</dd>'
-             f'<dt><span class="pill" style="background:{STATUS_COLOURS["prefix_validated"]}">damage point</span></dt>'
+             f'<dt>{pill("prefix_validated", "damage point", icon="!")}</dt>'
              '<dd>the end of a partially recovered part; the text just above may be non-original.</dd>'
              '<dt>Overall status</dt><dd><b>complete</b>: every part listed in the central directory was found, and every '
              'part is crc_verified or structure_verified; <b>partial</b>: otherwise, with some text or images recovered; '
