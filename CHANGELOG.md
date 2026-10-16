@@ -26,9 +26,9 @@ The recovery engine is unchanged: decoding, validation statuses, decoded XML, im
 
 ### Added
 - Reading outputs for every input, which never affect recovery:
-  - `recovered_document.html`: static page with the recovered content in reading order, image positions linked to `img/`, a warning at every part that may be non-original, and an index of parts and images by status.
+  - `recovered_report.html`: static page with the recovered content in reading order, image positions linked to `img/`, a warning at every part that may be non-original, and an index of parts and images by status.
   - `recovered_<name>.<ext>`: the recovered content rebuilt in the input's format (python-docx, openpyxl, python-pptx); not the original, and marked as such.
-  - `recovered_<name>.pdf`: PDF preview through LibreOffice or Microsoft Office (Windows) when installed; `--no-pdf` skips it. Manifest fields `recovered_document`, `rebuilt_document`, and `preview_pdf` (with `how_to` steps when no PDF was written).
+  - `recovered_<name>.pdf`: PDF preview through LibreOffice or Microsoft Office (Windows) when installed; `--no-pdf` skips it. Manifest fields `recovered_report`, `rebuilt_document`, and `preview_pdf` (with `how_to` steps when no PDF was written).
 - Dependencies `openpyxl` and `python-pptx`.
 - `--version`, `-r/--recursive`, `--dump-entries`, `--max-part-size MIB`.
 - Exit status: 0 complete, 1 partial, 2 failed, indeterminate, or not OOXML.

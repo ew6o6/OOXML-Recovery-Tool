@@ -646,7 +646,7 @@ class Release030Tests(unittest.TestCase):
         self.assertEqual(entry["decode_error"], "decoded output limit exceeded")
         self.assertEqual(manifest["max_part_size_bytes"], 64)
 
-# ----------------------------------------------------------------------------- recovered_document.md
+# ----------------------------------------------------------------------------- reading outputs
 
 RNS = b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
 REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
@@ -658,7 +658,7 @@ def rels(*items):
 
 
 class ReadingOutputTests(unittest.TestCase):
-    """recovered_document.html, the rebuilt document, and the PDF preview field."""
+    """recovered_report.html, the rebuilt document, and the PDF preview field."""
 
     DOC_WITH_IMAGE = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' + DML
                       + b' ' + RNS + b'><w:body><w:p><w:r><w:t>Before</w:t></w:r><w:r><w:drawing><a:graphic>'
@@ -706,12 +706,12 @@ class ReadingOutputTests(unittest.TestCase):
                 "ppt/media/image1.png": png_bytes()}
 
     def html(self, out):
-        return (out / "recovered_document.html").read_text(encoding="utf-8")
+        return (out / "recovered_report.html").read_text(encoding="utf-8")
 
-    # ------------------------------------------------------------------ recovered_document.html
+    # ------------------------------------------------------------------ recovered_report.html
     def test_html_docx_image_position_table_and_label_index(self):
         manifest, out = run_named(self.docx_parts(), "doc.docx")
-        self.assertEqual(manifest["recovered_document"], {"path": "recovered_document.html", "error": None})
+        self.assertEqual(manifest["recovered_report"], {"path": "recovered_report.html", "error": None})
         self.assertFalse((out / "recovered_document.md").exists())
         page = self.html(out)
         self.assertIn('Before<span class="mark">Image 1</span>After', page)
@@ -721,6 +721,20 @@ class ReadingOutputTests(unittest.TestCase):
         labels = page.split('id="labels"', 1)[1]
         self.assertIn("word/document.xml: “Body”", labels)
         self.assertNotIn("<script", page.lower())
+
+    def test_html_guide_explains_every_label_below_the_header(self):
+        from ort.core.document import LABEL_GUIDE, LABEL_ORDER
+        _, out = run_named({"word/document.xml": BODY}, "guide.docx")
+        page = self.html(out)
+        self.assertLess(page.index('class="hero"'), page.index('id="guide"'))
+        self.assertLess(page.index('id="guide"'), page.index('id="summary"'))
+        guide = page.split('id="guide"', 1)[1].split('id="summary"', 1)[0]
+        for status in LABEL_ORDER:
+            self.assertIn(f">{status}</span>", guide)
+            self.assertIn(LABEL_GUIDE[status][0], guide)
+        for overall in ("complete", "partial", "failed", "indeterminate"):
+            self.assertIn(f"<b>{overall}</b>", guide)
+        self.assertIn('<a href="#guide">Guide</a>', page)
 
     def test_html_escapes_recovered_text(self):
         document = BODY.replace(b"Hel", b"&lt;script&gt;alert(1)&lt;/script&gt;Hel")
@@ -764,7 +778,7 @@ class ReadingOutputTests(unittest.TestCase):
         document = (b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
                     b"<w:sdt><w:sdtContent><w:p>" + nested + b"</w:p></w:sdtContent></w:sdt></w:body></w:document>")
         manifest, out = run_named({"word/document.xml": document}, "deep.docx")
-        self.assertIsNone(manifest["recovered_document"]["error"])
+        self.assertIsNone(manifest["recovered_report"]["error"])
         self.assertIsNone(manifest["rebuilt_document"]["error"])
         self.assertIn("deep text", self.html(out))
 
@@ -773,8 +787,8 @@ class ReadingOutputTests(unittest.TestCase):
         with mock.patch("ort.core.document.render_html", side_effect=RuntimeError("boom")):
             manifest, out = run_tool(package({"word/document.xml": BODY}), "isolated")
         self.assertEqual(manifest["overall_status"], "complete")
-        self.assertEqual(manifest["recovered_document"], {"path": None, "error": "RuntimeError: boom"})
-        self.assertFalse((out / "recovered_document.html").exists())
+        self.assertEqual(manifest["recovered_report"], {"path": None, "error": "RuntimeError: boom"})
+        self.assertFalse((out / "recovered_report.html").exists())
         self.assertTrue((out / manifest["rebuilt_document"]["path"]).exists())
         self.assertTrue((out / "text" / "word_document.xml.txt").exists())
 

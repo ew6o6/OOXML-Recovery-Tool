@@ -1,11 +1,13 @@
-"""Reading outputs of one input: recovered_document.html, the rebuilt document, and its PDF preview.
+"""Reading outputs of one input: recovered_report.html, the rebuilt document, and its PDF preview.
 
-recovered_document.html (static: no script, no external resource; all recovered text HTML-escaped)
-  Overview          the "not the original" notice, input hash, statuses, links to the rebuilt document and PDF
+recovered_report.html (static: no script, no external resource; all recovered text HTML-escaped)
+  Header            the "not the original" notice, input hash, statuses, links to the rebuilt document and PDF
+  Guide             what each label means, its evidence, and how to treat it in a report
+  Overview          label counts and document properties
   Contents          reading order with the validation status of every part
   Recovered content reading order; every section names its part and status and warns where content may be
                     non-original; images appear where they are referenced and link to their files in img/
-  Labels            an index of parts and images by validation status
+  Label index       parts and images by validation status
 
 Reading order: DOCX body, headers, footers, footnotes, endnotes, comments; XLSX sheets in workbook order,
 with images at their anchor cells; PPTX slides in presentation order, with pictures and speaker notes.
@@ -22,7 +24,7 @@ from pathlib import Path
 from .handlers.common import column_letters, column_number, parse_shared_strings, parse_sheet_cells, resolve_cell
 from .utils import STATUS_NOTES, local_name, parse_xml
 
-HTML_FILENAME = "recovered_document.html"
+HTML_FILENAME = "recovered_report.html"
 LABEL_ORDER = ["crc_verified", "structure_verified", "prefix_validated", "crc_mismatch", "unverified", "rejected"]
 NOTES = {**STATUS_NOTES, "rejected": "no evidence of being the claimed content; not written"}
 WARNINGS = {
@@ -38,6 +40,37 @@ DOCX_GROUPS = [("Header", r"^word/header\d*\.xml$"), ("Footer", r"^word/footer\d
                ("Comments", r"^word/comments\.xml$")]
 DOCX_CONTAINERS = {"sdt", "sdtContent", "body", "customXml", "hdr", "ftr", "footnote", "endnote", "comment"}
 BROWSER_IMAGES = {"png", "jpeg", "jpg", "gif", "bmp", "webp", "svg"}
+LABEL_GUIDE = {  # what the label means · evidence · how to treat the content in a report
+    "crc_verified": (
+        "Byte-identical to the original.",
+        "The CRC-32 of the recovered bytes equals the value recorded in the ZIP structure (local file header, "
+        "central directory, or data descriptor). CRC-32 detects accidental damage; it is not proof against "
+        "deliberate recomputation.",
+        "May be presented as original content."),
+    "structure_verified": (
+        "Complete and well-formed, but not shown to be original.",
+        "No CRC-32 value was available to compare. The part is well-formed XML, or the image decodes completely.",
+        "State that the content is complete but could not be compared with the original."),
+    "prefix_validated": (
+        "Only the start of the part was recovered.",
+        "DEFLATE is decoded sequentially (RFC 1951), so output before the damaged bytes equals the original. Where "
+        "the damage begins in the output is unknown, so the end may contain non-original text.",
+        "Use the beginning; treat the text just before the marked damage point with caution."),
+    "crc_mismatch": (
+        "Decoded completely, but altered.",
+        "The CRC-32 of the recovered bytes differs from the recorded value: some content differs from the original. "
+        "Where it differs is unknown.",
+        "Indicative only; do not present as original content."),
+    "unverified": (
+        "Not confirmed.",
+        "No CRC-32 value was available, and the part is not well-formed (or no validator exists for the image format).",
+        "Indicative only; may differ from the original."),
+    "rejected": (
+        "Not recovered.",
+        "There is no evidence that the bytes are the claimed content, so nothing was written. Uncompressed images may "
+        "be kept as diagnostic files.",
+        "Report only that the part existed at the recorded location."),
+}
 
 
 def attribute(element, name):
@@ -385,7 +418,9 @@ h2{font-size:28px;line-height:1.35;margin:0 0 8px}h2 em{font-style:normal;color:
 .card{background:#fff;border:1px solid var(--line);padding:18px 20px}
 .card .k{font-size:11px;font-weight:800;letter-spacing:.1em}.card .n{font-size:26px;font-weight:800;margin:2px 0}
 .card p{margin:0;color:var(--sub);font-size:13px}
-.props{display:grid;grid-template-columns:160px 1fr;gap:6px 18px;margin-top:28px;font-size:14px}.props dt{color:var(--muted)}.props dd{margin:0;word-break:break-word}
+.props{display:grid;grid-template-columns:160px 1fr;gap:6px 18px;margin-top:28px;font-size:14px}
+table.guide{width:100%;font-size:14px}table.guide td,table.guide th{white-space:normal;padding:10px 12px;border-left:none;border-right:none}
+table.guide td:first-child{white-space:nowrap}.legend dt{display:flex;align-items:center}.props dt{color:var(--muted)}.props dd{margin:0;word-break:break-word}
 ol.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(4,1fr)}
 ol.steps li{border-left:1px solid var(--line);padding:4px 18px 18px}ol.steps li:nth-child(4n+1){border-left:none;padding-left:0}
 ol.steps .num{color:var(--red);font-size:12px;font-weight:800}ol.steps .t{font-weight:700;margin:2px 0}
@@ -472,8 +507,8 @@ def render_html(content, blocks, manifest, outputs):
          '<meta name="viewport" content="width=device-width,initial-scale=1">',
          f"<title>Recovered · {esc(name)}</title><style>{CSS}</style></head><body>",
          '<header class="top"><div class="inner"><a class="brand" href="#overview">ORT<small>RECOVERED DOCUMENT</small></a>'
-         '<nav><a href="#overview">Overview</a><a href="#contents">Contents</a><a href="#content">Recovered content</a>'
-         '<a href="#labels">Labels</a></nav>'
+         '<nav><a href="#guide">Guide</a><a href="#summary">Overview</a><a href="#contents">Contents</a>'
+         '<a href="#content">Recovered content</a><a href="#labels">Label index</a></nav>'
          + pill(None, f"overall: {m.get('overall_status')}", OVERALL_COLOURS.get(m.get("overall_status"), "#8A847D"))
          + "</div></header>",
          '<div class="hero" id="overview"><div class="inner"><div class="eyebrow">Rebuilt by ORT · not the original</div>',
@@ -499,7 +534,27 @@ def render_html(content, blocks, manifest, outputs):
              f'<div><dt>Parts verified</dt><dd>{part_status.get("crc_verified", 0)} / {sum(part_status.values())}</dd></div>'
              "</dl></div></div>")
     # 01 overview
-    o.append('<section class="block"><div class="inner"><div class="sec-head">01 &nbsp;Overview</div>'
+    # 01 guide: what the labels mean (right below the dark header)
+    o.append('<section class="block" id="guide"><div class="inner"><div class="sec-head">01 &nbsp;How to read this report</div>'
+             '<h2>What the <em>labels</em> mean</h2><p class="lead">Every recovered part and image carries one label. '
+             'Labels are assigned conservatively: content is called original only when a CRC-32 value shows it.</p>'
+             '<div class="tablewrap"><table class="guide"><tr><th>Label</th><th>What it means</th><th>Evidence</th>'
+             '<th>In a report</th></tr>')
+    for status in LABEL_ORDER:
+        meaning, evidence, use = LABEL_GUIDE[status]
+        o.append(f"<tr><td>{pill(status)}</td><td><b>{esc(meaning)}</b></td><td>{esc(evidence)}</td><td>{esc(use)}</td></tr>")
+    o.append('</table></div><dl class="props legend">'
+             '<dt><span class="mark">Image 3</span></dt><dd>where an image appears in the content; the image follows.</dd>'
+             f'<dt><span class="pill" style="background:{STATUS_COLOURS["prefix_validated"]}">damage point</span></dt>'
+             '<dd>the end of a partially recovered part; the text just above may be non-original.</dd>'
+             '<dt>Overall status</dt><dd><b>complete</b>: every part listed in the central directory was found, and every '
+             'part is crc_verified or structure_verified; <b>partial</b>: otherwise, with some text or images recovered; '
+             '<b>failed</b>: nothing was recovered; <b>indeterminate</b>: nothing was recovered and there is no central '
+             'directory to compare with.</dd>'
+             "<dt>Rebuilt document</dt><dd>the recovered content written anew in the input's format; it is not the "
+             "original and does not reproduce its formatting.</dd></dl></div></section>")
+    # 02 overview
+    o.append('<section class="block beige" id="summary"><div class="inner"><div class="sec-head">02 &nbsp;Overview</div>'
              f'<h2>Validation status of <em>{sum(part_status.values())} parts</em> and {len(content.images)} images</h2>'
              '<p class="lead">Each part and image carries one status. Only a CRC-32 match shows that content is '
              'byte-identical to the original.</p><div class="cards">')
@@ -520,7 +575,7 @@ def render_html(content, blocks, manifest, outputs):
         o.append('<dl class="props">' + "".join(properties) + "</dl>")
     o.append("</div></section>")
     # 02 contents
-    o.append('<section class="block beige" id="contents"><div class="inner"><div class="sec-head">02 &nbsp;Contents</div>'
+    o.append('<section class="block" id="contents"><div class="inner"><div class="sec-head">03 &nbsp;Contents</div>'
              '<h2>Reading order</h2><p class="lead">Select a part to go to it.</p><ol class="steps">')
     for index, (_, heading, part, status, anchor) in enumerate(sections, 1):
         o.append(f'<li><a href="#{anchor}" title="{esc(part)}"><div class="num">{index:02d}</div><div class="t">{esc(heading)}</div>'
@@ -528,7 +583,7 @@ def render_html(content, blocks, manifest, outputs):
                  f"{esc(status)}</div></a></li>")
     o.append("</ol></div></section>")
     # 03 recovered content
-    o.append('<section class="block" id="content"><div class="inner"><div class="sec-head">03 &nbsp;Recovered content</div>')
+    o.append('<section class="block beige" id="content"><div class="inner"><div class="sec-head">04 &nbsp;Recovered content</div>')
     open_part, rows = False, []
 
     def flush():
@@ -583,7 +638,7 @@ def render_html(content, blocks, manifest, outputs):
         o.append("</div></article>")
     o.append("</div></section>")
     # 04 labels
-    o.append('<section class="block beige" id="labels"><div class="inner"><div class="sec-head">04 &nbsp;Labels</div>'
+    o.append('<section class="block" id="labels"><div class="inner"><div class="sec-head">05 &nbsp;Label index</div>'
              '<h2>Index by validation status</h2><p class="lead">Statuses that do not show content to be original are expanded.</p>')
     for status in LABEL_ORDER:
         items = content.label_rows(status)
@@ -603,7 +658,7 @@ def render_html(content, blocks, manifest, outputs):
 
 
 def write_reading_outputs(entries, manifest, output_directory, make_pdf=True):
-    """Write the rebuilt document, its PDF preview, and recovered_document.html; return the manifest fields.
+    """Write the rebuilt document, its PDF preview, and recovered_report.html; return the manifest fields.
 
     Each step is independent: a failure is recorded in its field and never affects recovery or the other steps."""
     from . import pdf, rebuild
@@ -622,7 +677,7 @@ def write_reading_outputs(entries, manifest, output_directory, make_pdf=True):
         content = Content(entries, manifest)
         blocks = content.build()
         (output_directory / HTML_FILENAME).write_text(render_html(content, blocks, manifest, fields), encoding="utf-8")
-        fields["recovered_document"] = {"path": HTML_FILENAME, "error": None}
+        fields["recovered_report"] = {"path": HTML_FILENAME, "error": None}
     except Exception as error:  # noqa: BLE001
-        fields["recovered_document"] = {"path": None, "error": f"{type(error).__name__}: {error}"}
+        fields["recovered_report"] = {"path": None, "error": f"{type(error).__name__}: {error}"}
     return fields
