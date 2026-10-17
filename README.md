@@ -34,17 +34,20 @@ ort file.xlsx --max-part-size 256             # decode parts up to 256 MiB (defa
 ort file.docx --dump-entries                  # also write entries.json (every entry, payload as hex)
 ort file.docx --salvage-fragments             # experimental fragment salvage (see below)
 ort path/to/folder/ --no-pdf                  # skip the PDF preview (large batches)
+ort file.docx --process-intact                # also process an undamaged package
 ort --version
 python -m ort path/to/file.xlsx               # same, without installing
 ```
 
 ORT detects the format from the package content, not from the file extension.
 
+An undamaged package needs no recovery: it is reported as `intact` and no output folder is written. A package counts as intact only if every Central Directory record finds its Local File Header at the recorded offset with the same name, flags, method, CRC-32, and sizes, the entries fill the file up to the Central Directory without gaps, the EOCD record ends the file, and every entry decodes to its CRC-32. `--process-intact` processes such a package anyway, for example to check the tool on intact documents.
+
 **Exit status:**
 
 | Code | Meaning |
 |---|---|
-| 0 | Every input is `complete` |
+| 0 | Every input is `complete` or `intact` |
 | 1 | At least one input is `partial` |
 | 2 | At least one input failed, is indeterminate, or is not OOXML, or the path holds no file |
 
@@ -189,12 +192,12 @@ OOXML-Recovery-Tool/
 
 | Set | Result |
 |---|---|
-| 278 intact OOXML controls (CRC-valid, SHA-unique) | 11,388/11,388 XML parts, 138/138 DOCX text parts, and 1,532/1,532 images byte-identical; all statuses complete |
+| 278 intact OOXML controls (CRC-valid, SHA-unique; processed with `--process-intact`) | 11,388/11,388 XML parts, 138/138 DOCX text parts, and 1,532/1,532 images byte-identical; all statuses complete |
 | 2,496 damaged DOCX files | Body text exact in 2,240; in the 256 files with a destroyed body, the footer was recovered exactly in all 256 |
 | Adversarial and derived image damage (700 cases) | Entry loss 0 after mid-stream damage; 1,125/1,125 STORED images recovered with sizes zeroed; junk never written; 0 images labelled verified or decodable that differ from the original |
 | 0.3.0 vs 0.2.1 recovery engine (all 3,474 files above) | Identical on all 3,474 files: decode and validation statuses and decoded-XML SHA-256 of 143,810 entries, 9,379 image records, DOCX text, and the summary statuses |
 | 0.3.0 output layer on the 278 controls | `parts/`: 11,599/11,599 files byte-identical to the original part. XLSX (96 workbooks): 5,269/5,269 text, 1,586/1,586 numeric, and 2,997/2,997 empty cells equal to openpyxl (538 date cells not compared); sheet names correct in 96/96. PPTX (89 decks, 2,047 slides): no slide misses text that python-pptx reads; 1,994 identical, 53 with additional text from alternate content (`mc:AlternateContent`), which python-pptx does not read. DOCX core properties: 271/271 values equal to python-docx (2 files without `docProps/core.xml` excluded) |
-| Unit tests | 42 passed (`python -m pytest tests`) |
+| Unit tests | 63 passed (`python -m pytest tests`) |
 
 ## Known limitations
 

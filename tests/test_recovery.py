@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from ort import __version__
 from ort.core.decoder import decode_local_file_data, recover_deflate_prefix, validate_xml_prefix
-from ort.core.extractor import get_file_hex, recover_filename_length
+from ort.core.extractor import get_file_hex as run_extractor, recover_filename_length
 from ort.core.fragment_salvage import recover_deflate_fragments
 from ort.core.handlers.common import extract_xml_text_for_docx
 from ort.core.utils import detect_image_format, validate_image_bytes, write_part
@@ -36,13 +36,33 @@ FOOTER = (
 )
 
 
-def package(parts, compression=zipfile.ZIP_DEFLATED):
-    stream = io.BytesIO()
+def get_file_hex(*args, **options):
+    """Most fixtures are undamaged packages; process them as before unless a test says otherwise."""
+    options.setdefault("process_intact", True)
+    return run_extractor(*args, **options)
+
+
+class _Unseekable(io.RawIOBase):
+    """A write-only stream without seek, so that zipfile writes data descriptors (flag bit 3)."""
+
+    def __init__(self):
+        self.data = bytearray()
+
+    def writable(self):
+        return True
+
+    def write(self, chunk):
+        self.data.extend(chunk)
+        return len(chunk)
+
+
+def package(parts, compression=zipfile.ZIP_DEFLATED, descriptors=False):
+    stream = _Unseekable() if descriptors else io.BytesIO()
     with zipfile.ZipFile(stream, "w", compression=compression) as archive:
         archive.writestr("[Content_Types].xml", b"<Types/>")
         for name, data in parts.items():
             archive.writestr(name, data)
-    return stream.getvalue()
+    return bytes(stream.data) if descriptors else stream.getvalue()
 
 
 def png_bytes():
@@ -630,10 +650,11 @@ class Release030Tests(unittest.TestCase):
         (temp_dir / "partial.docx").write_bytes(truncated_body_entry())
         (temp_dir / "notes.txt").write_text("not a package")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main([str(temp_dir / "sub" / "good.docx"), "--no-pdf"]), 0)
+            self.assertEqual(main([str(temp_dir / "sub" / "good.docx"), "--no-pdf", "--process-intact"]), 0)
             self.assertEqual(main([str(temp_dir / "partial.docx"), "--no-pdf"]), 1)
             self.assertEqual(main([str(temp_dir), "--no-pdf"]), 2)  # notes.txt is not OOXML
-            self.assertEqual(main([str(temp_dir / "sub"), "-r", "--no-pdf"]), 0)  # output_good.docx is skipped
+            # output_good.docx is skipped
+            self.assertEqual(main([str(temp_dir / "sub"), "-r", "--no-pdf", "--process-intact"]), 0)
             self.assertEqual(main([str(temp_dir / "missing"), "--no-pdf"]), 2)
             with self.assertRaises(SystemExit) as raised:
                 main(["--version"])
@@ -868,9 +889,63 @@ class ReadingOutputTests(unittest.TestCase):
         temp_dir = Path(tempfile.mkdtemp())
         (temp_dir / "cli.docx").write_bytes(package({"word/document.xml": BODY}))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main([str(temp_dir / "cli.docx"), "--no-pdf", "--no-pdf"]), 0)
+            self.assertEqual(main([str(temp_dir / "cli.docx"), "--no-pdf", "--no-pdf", "--process-intact"]), 0)
         manifest = json.loads((temp_dir / "output_cli.docx" / "recovery_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["preview_pdf"]["status"], "disabled")
+
+
+def lfh_offset(data, name):
+    """Offset of the Local File Header of a part (its name first appears in that header)."""
+    return data.index(name.encode()) - 30
+
+
+class IntactPackageTests(unittest.TestCase):
+    """An undamaged package needs no recovery: it is reported as intact and left without output."""
+
+    def run_quiet(self, data, file_name, **options):
+        temp_dir = Path(tempfile.mkdtemp())
+        (temp_dir / file_name).write_bytes(data)
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = run_extractor(str(temp_dir / file_name), output_root=temp_dir / "results", make_pdf=False,
+                                   **options)
+        return result, temp_dir
+
+    def test_intact_package_is_not_processed(self):
+        for descriptors in (False, True):
+            for compression in (zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED):
+                data = package({"word/document.xml": BODY, "word/media/image1.png": png_bytes()}, compression, descriptors)
+                result, temp_dir = self.run_quiet(data, "intact.docx")
+                self.assertEqual((result.overall_status, result.extension), ("intact", ".docx"))
+                self.assertIsNone(result.output_directory)
+                self.assertFalse((temp_dir / "results").exists())
+
+    def test_process_intact_runs_the_full_recovery(self):
+        result, _ = self.run_quiet(package({"word/document.xml": BODY}), "forced.docx", process_intact=True)
+        self.assertEqual(result.overall_status, "complete")
+        self.assertTrue((result.output_directory / "recovery_manifest.json").is_file())
+
+    def test_damage_that_a_zip_reader_ignores_is_not_intact(self):
+        data = package({"word/document.xml": BODY})
+        sizes_zeroed = bytearray(data)
+        struct.pack_into("<II", sizes_zeroed, lfh_offset(data, "word/document.xml") + 18, 0, 0)
+        zipfile.ZipFile(io.BytesIO(bytes(sizes_zeroed))).testzip()  # a ZIP reader accepts it
+        cd_offset = struct.unpack_from("<I", data, data.rindex(b"PK\x05\x06") + 16)[0]
+        crc_changed = bytearray(data)
+        crc_changed[lfh_offset(data, "word/document.xml") + 30 + len("word/document.xml") + 2] ^= 0xFF
+        for damaged in (bytes(sizes_zeroed), data + b"\x00" * 16, b"\x00" * 16 + data, data[:cd_offset],
+                        bytes(crc_changed)):
+            result, _ = self.run_quiet(damaged, "damaged.docx")
+            self.assertNotEqual(result.overall_status, "intact")
+            self.assertIsNotNone(result.output_directory)
+
+    def test_cli_reports_intact_as_success_without_output(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        (temp_dir / "plain.docx").write_bytes(package({"word/document.xml": BODY}))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([str(temp_dir / "plain.docx"), "--no-pdf"]), 0)
+            self.assertFalse((temp_dir / "output_plain.docx").exists())
+            self.assertEqual(main([str(temp_dir / "plain.docx"), "--no-pdf", "--process-intact"]), 0)
+        self.assertTrue((temp_dir / "output_plain.docx" / "recovery_manifest.json").is_file())
 
 
 if __name__ == "__main__":

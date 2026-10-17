@@ -1,7 +1,8 @@
 """Command-line interface of the OOXML Recovery Toolkit (ORT).
 
-Exit status: 0 when every input is complete, 1 when at least one is partial, and 2 when at
-least one failed, is indeterminate, is not OOXML, or the path holds no file.
+Exit status: 0 when every input is complete or intact (undamaged, so not processed), 1 when at
+least one is partial, and 2 when at least one failed, is indeterminate, is not OOXML, or the path
+holds no file.
 """
 
 import argparse
@@ -13,7 +14,7 @@ from .core.decoder import MAX_DECODED_BYTES
 from .core.extractor import get_file_hex
 
 MIB = 1024 * 1024
-_EXIT_CODES = {"complete": 0, "partial": 1}
+_EXIT_CODES = {"complete": 0, "intact": 0, "partial": 1}
 
 
 def exit_code(status):
@@ -35,7 +36,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="ort",
         description="Recover document content and images from damaged OOXML files (.docx, .xlsx, .pptx).",
-        epilog="Exit status: 0 = every file complete, 1 = at least one partial, "
+        epilog="Exit status: 0 = every file complete or intact, 1 = at least one partial, "
                "2 = at least one failed, indeterminate, or not OOXML.",
     )
     parser.add_argument("path", help="A file, or a folder whose files are processed")
@@ -51,6 +52,9 @@ def parse_args(argv=None):
     parser.add_argument("--no-pdf", action="store_true",
                         help="Do not convert the rebuilt document to PDF (useful for large batches); "
                              "the manifest records how to obtain the PDF later")
+    parser.add_argument("--process-intact", action="store_true",
+                        help="Also process undamaged packages, which are otherwise reported as intact and "
+                             "left without output (e.g. to verify the tool on intact documents)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args(argv)
 
@@ -72,12 +76,15 @@ def iter_input_files(path, recursive=False):
 
 
 def process_file(file_path, *, output_root=None, salvage_fragments=False, dump_entries=False,
-                 max_part_size=MAX_DECODED_BYTES, make_pdf=True):
+                 max_part_size=MAX_DECODED_BYTES, make_pdf=True, process_intact=False):
     """Recover one file and return its RecoveryResult."""
     logging.info("Input file: %s", file_path)
     result = get_file_hex(file_path, output_root=output_root, salvage_fragments=salvage_fragments,
-                          dump_entries=dump_entries, max_part_size=max_part_size, make_pdf=make_pdf)
-    if result.output_directory is None:
+                          dump_entries=dump_entries, max_part_size=max_part_size, make_pdf=make_pdf,
+                          process_intact=process_intact)
+    if result.overall_status == "intact":
+        logging.info("Intact package, no recovery needed (use --process-intact to process it): %s", file_path)
+    elif result.output_directory is None:
         logging.warning("Skipped (%s): %s", result.overall_status, file_path)
     return result
 
@@ -94,7 +101,7 @@ def main(argv=None):
     for file_path in iter_input_files(args.path, args.recursive):
         result = process_file(file_path, output_root=args.output_root, salvage_fragments=args.salvage_fragments,
                               dump_entries=args.dump_entries, max_part_size=args.max_part_size * MIB,
-                              make_pdf=not args.no_pdf)
+                              make_pdf=not args.no_pdf, process_intact=args.process_intact)
         worst = max(worst or 0, exit_code(result.overall_status))
     if worst is None:
         logging.error("No file found in '%s'", args.path)

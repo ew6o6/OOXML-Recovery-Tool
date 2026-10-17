@@ -29,10 +29,11 @@ The recovery engine is unchanged: decoding, validation statuses, decoded XML, im
   - `recovered_report.html`: static page with the recovered content in reading order, image positions linked to `img/`, a warning at every part that may be non-original, and an index of parts and images by status.
   - `recovered_<name>.<ext>`: the recovered content rebuilt in the input's format (python-docx, openpyxl, python-pptx); not the original, and marked as such.
   - `recovered_<name>.pdf`: PDF preview through LibreOffice or Microsoft Office (Windows) when installed; `--no-pdf` skips it. Manifest fields `recovered_report`, `rebuilt_document`, and `preview_pdf` (with `how_to` steps when no PDF was written).
+- An undamaged package is reported as `intact` and not processed (no output folder): every Central Directory record matches its Local File Header (name, flags, method, CRC-32, sizes), the entries fill the file up to the Central Directory, the EOCD record ends the file, and every entry decodes to its CRC-32. `--process-intact` processes it anyway.
 - Dependencies `openpyxl` and `python-pptx`.
-- `--version`, `-r/--recursive`, `--dump-entries`, `--max-part-size MIB`.
-- Exit status: 0 complete, 1 partial, 2 failed, indeterminate, or not OOXML.
-- 27 unit tests (58 in total).
+- `--version`, `-r/--recursive`, `--dump-entries`, `--max-part-size MIB`, `--process-intact`.
+- Exit status: 0 complete or intact, 1 partial, 2 failed, indeterminate, or not OOXML.
+- 32 unit tests (63 in total).
 
 ### Removed
 - Unused code: `main_dispatcher.py`, `decode_utf8`, `decompress_deflate_hex`, `decompress_deflate_bytes`, `is_structurally_valid_ooxml_raw`, `extract_local_file_names_raw`, `parse_xlsx_rels_file`, `extract_file_name`, and the unused DOCX style lookup.

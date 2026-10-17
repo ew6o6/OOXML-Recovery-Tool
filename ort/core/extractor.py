@@ -219,6 +219,94 @@ def _central_directory_inventory(data, discovered_names):
     return status, missing, extras
 
 
+# --------------------------------------------------------------------------- intact packages
+
+_INTACT_CHUNK = 1 << 16
+
+
+def _entry_crc(data, start, method, csize, usize):
+    """CRC-32 and length of the decoded entry, or None if it does not decode exactly."""
+    payload = data[start : start + csize]
+    if method == 0:
+        return (zlib.crc32(payload), len(payload)) if csize == usize else None
+    decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+    crc, length = 0, 0
+    try:
+        for position in range(0, len(payload), _INTACT_CHUNK):
+            output = decoder.decompress(payload[position : position + _INTACT_CHUNK])
+            crc, length = zlib.crc32(output, crc), length + len(output)
+            if length > usize:
+                return None
+        output = decoder.flush()
+    except zlib.error:
+        return None
+    crc, length = zlib.crc32(output, crc), length + len(output)
+    if not decoder.eof or decoder.unused_data:
+        return None
+    return crc, length
+
+
+def _is_intact_package(data):
+    """True only for an undamaged ZIP package, which needs no recovery.
+
+    The EOCD record must end the file (with its comment) and follow the Central Directory directly. Each
+    Central Directory record must find its Local File Header at the recorded offset with the same name,
+    flags, method, CRC-32, and sizes (taken from the data descriptor when flag bit 3 is set); the entries
+    must cover the file from its start to the Central Directory without gaps; and every entry must decode
+    to its recorded size and CRC-32. A standard ZIP reader is not enough: it ignores the sizes in the Local
+    File Header, so a package whose header size fields are damaged would pass it. Encrypted entries,
+    ZIP64, and methods other than stored and Deflate are never treated as intact.
+    """
+    eocd = data.rfind(EOCD_SIG)
+    if eocd < 0 or eocd + 22 > len(data):
+        return False
+    disk, cd_disk, count_disk, count, cd_size, cd_offset, comment_length = struct.unpack_from("<HHHHIIH", data, eocd + 4)
+    if disk or cd_disk or count_disk != count or not count or eocd + 22 + comment_length != len(data):
+        return False
+    if cd_offset + cd_size != eocd:
+        return False
+    records, position = [], cd_offset
+    for _ in range(count):
+        if data[position : position + 4] != CD_SIG or position + 46 > eocd:
+            return False
+        (_, _, flags, method, _, _, crc, csize, usize, name_length, extra_length, comment, _, _, _,
+         local_offset) = struct.unpack_from("<HHHHHHIIIHHHHHII", data, position + 4)
+        raw_name = data[position + 46 : position + 46 + name_length]
+        records.append((local_offset, raw_name, flags, method, crc, csize, usize))
+        position += 46 + name_length + extra_length + comment
+    if position != eocd:
+        return False
+    expected = 0
+    for local_offset, raw_name, flags, method, crc, csize, usize in sorted(records):
+        if local_offset != expected or flags & 1 or method not in (0, 8) or 0xFFFFFFFF in (csize, usize, local_offset):
+            return False
+        if data[local_offset : local_offset + 4] != LFH_SIG:
+            return False
+        (_, local_flags, local_method, _, _, local_crc, local_csize, local_usize, name_length,
+         extra_length) = struct.unpack_from("<HHHHHIIIHH", data, local_offset + 4)
+        start = local_offset + 30 + name_length + extra_length
+        if (local_flags, local_method) != (flags, method) or data[local_offset + 30 : local_offset + 30 + name_length] != raw_name:
+            return False
+        end = start + csize
+        if flags & 8:
+            descriptor = data[end : end + 16]
+            if descriptor[:4] == DD_SIG:
+                descriptor, length = descriptor[4:16], 16
+            else:
+                descriptor, length = descriptor[:12], 12
+            if len(descriptor) != 12 or struct.unpack("<III", descriptor) != (crc, csize, usize):
+                return False
+            if (local_crc, local_csize, local_usize) not in ((crc, csize, usize), (0, 0, 0)):
+                return False
+            end += length
+        elif (local_crc, local_csize, local_usize) != (crc, csize, usize):
+            return False
+        if end > cd_offset or _entry_crc(data, start, method, csize, usize) != (crc, usize):
+            return False
+        expected = end
+    return expected == cd_offset
+
+
 # --------------------------------------------------------------------------- headers
 
 
@@ -597,11 +685,12 @@ def _write_parts(entries, output_directory):
 
 
 def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_entries=False,
-                 max_part_size=MAX_DECODED_BYTES, make_pdf=True):
+                 max_part_size=MAX_DECODED_BYTES, make_pdf=True, process_intact=False):
     """Recover one file: write its output folder and recovery manifest (schema v3).
 
     Returns RecoveryResult(entries, extension, output_directory, overall_status). When nothing
-    is written, overall_status is "missing_input" or "not_ooxml" and the other fields are None.
+    is written, overall_status is "missing_input", "not_ooxml", or "intact" (an undamaged package,
+    which is not processed unless process_intact is set) and entries and output_directory are None.
     """
     input_path = Path(file_path)
     if not input_path.is_file():
@@ -619,6 +708,10 @@ def get_file_hex(file_path, *, output_root=None, salvage_fragments=False, dump_e
         safe_print("[PREPROCESSING] No OOXML package prefix found.")
         return RecoveryResult(None, None, None, "not_ooxml")
     safe_print(f"[PREPROCESSING] OOXML parts found. Inferred type: {inferred_ext}")
+    if not process_intact and _is_intact_package(data):
+        safe_print("[PREPROCESSING] Intact package: every entry matches the Central Directory and its CRC-32. "
+                   "No recovery needed.")
+        return RecoveryResult(None, inferred_ext, None, "intact")
 
     inventory_status, inventory_missing, inventory_extras = _central_directory_inventory(data, names)
     decode_local_file_data(entries, max_output=max_part_size)
